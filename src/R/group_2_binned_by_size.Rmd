@@ -1,0 +1,708 @@
+---
+title: "group_2_binned_by_size"
+output: html_document
+date: "2025-06-20"
+---
+
+In this script, I will be 
+
+
+Dividing peptides by size:
+# Group 2 is cleavage sites (per-residue annotation)
+
+
+# Let's look at how many sequences have the "peptide" annotated.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cowplot)
+library(ggforce)
+library(ggridges)
+options(scipen = 999)
+library(colorspace)
+library(tidytext)    # for reorder_within() and scale_x_reordered()
+```
+
+Note: get "clean_data_5" in clean_KW-0527.Rmd
+```{r}
+peptides_ann <- clean_data_5 %>%
+  select(Entry, Sequence, Length, Peptide) %>%
+  distinct() %>%
+  na.omit(Peptide)
+```
+
+
+Here is a list of all the peptide starts and ends. 
+```{r}
+peptides_ann_2 <- peptides_ann %>%
+  # extract all “123..456” substrings as a list-column
+  mutate(range_str = str_extract_all(Peptide, "\\d+\\.\\.\\d+")) %>%
+  # turn each element of that list into its own row
+  unnest_longer(range_str) %>%
+  # split “123..456” into two new columns
+  separate(range_str, into = c("peptide_start","peptide_end"), sep = "\\.\\.") %>%
+  # convert to integer
+  mutate(
+     start = as.integer(peptide_start),
+     end   = as.integer(peptide_end)) %>%
+  select(Entry, Sequence, Length, peptide_start, peptide_end)
+
+```
+
+How much data is left after I filter out the starts at 1. 
+
+```{r}
+not_1_start <- peptides_ann_2 %>%
+  filter(peptide_start != 1) # 1297 unique peptides (with alternative starts)
+
+```
+
+get Signal sequence info: (where signal starts and ends so that later we can remove cleavage site right after signal)
+```{r}
+signal_info <- clean_data_5 %>%
+  select(Entry, Signal.peptide) %>%
+  distinct() %>%
+  mutate(range_str = str_extract_all(Signal.peptide, "\\d+\\.\\.\\d+")) %>%
+  unnest_longer(range_str) %>%
+  separate(range_str, into = c("signal_start","signal_end"), sep = "\\.\\.") %>%
+  mutate(
+     start = as.integer(signal_start),
+     end   = as.integer(signal_end)) %>%
+  select(Entry, signal_start, signal_end)
+```
+
+Joining the peptide and signal info dataframes together.
+
+```{r}
+peptide_data_full <- peptides_ann_2 %>%
+  left_join(signal_info)
+```
+
+```{r}
+right_after_signal <- peptide_data_full %>%
+  mutate(peptide_after_signal = ifelse(as.numeric(signal_end) + 1 == peptide_start, TRUE, FALSE))
+```  
+  
+Let's see how many peptides are NOT right after the signal:
+```{r}
+right_after_signal %>%
+  filter(peptide_after_signal == FALSE) %>%
+  count()
+
+```
+Now let's see the sequences where the start is 1 and the end is equal to the length. These are the mature peptide and we do not want these in the dataset.
+```{r}
+mature_peptides <- right_after_signal %>%
+  filter(peptide_start == 1 & peptide_end == Length) # result: 938 mature peptide sequences
+```
+
+Now, let's look at the sequences where the start is 1, but the end is not equal to the length (these we want to keep because we can use the second cleavage site residues)
+```{r}
+semi_mature_peptides <- right_after_signal %>%
+  filter(peptide_start == 1) %>%
+  filter(peptide_end != Length) # result: only 9 of these 
+```
+
+
+I now want to save the unique sequences as a fasta file. 
+```{r}
+for_fasta <- right_after_signal %>%
+  filter(!(peptide_start == 1 & peptide_end == Length)) %>% # filtering out mature peptides
+  select(Entry, Sequence) %>%
+  distinct(Sequence, .keep_all = TRUE)
+
+# Create FASTA-formatted lines: ">ID" on one line, followed by the sequence on the next
+fasta_lines <- apply(for_fasta, 1, function(row) {
+  paste0(">", row["Entry"], "\n", row["Sequence"])
+})
+
+# Write these lines to a .fasta file
+#writeLines(fasta_lines, con = "../../data/cleavage_site_sequences.fasta")
+```
+
+#=====================================================================================================================
+# START HERE from the script "right_after_signal"
+#====================================================================================================================
+
+Let's first get a df with our 320 unique entries:
+```{r}
+for_binning <- right_after_signal %>%
+  filter(!(peptide_start == 1 & peptide_end == Length)) # filtering out mature peptides
+```
+
+the df "right_after_signal" is the dataset we have been working with. I will group the peptides by "Entry"
+and I will count the number of rows (alternative peptides per Entry)
+
+```{r}
+alt_pep_counts <- for_binning %>%
+  group_by(Sequence) %>%
+  mutate(alt_peptides = n()) %>%
+  ungroup()
+```
+
+Now I want to see how many different count groups there are and how many entries per group. If there are too many groups, I will next bin the Entries by "alternative peptide count" (How many alternative peptides each Entry has). 
+
+```{r}
+count_counts <- alt_pep_counts %>%
+  group_by(alt_peptides) %>%
+  dplyr::count() %>%
+  ungroup()
+```
+
+Here are a few things to think about here: I already saved the "positive dataset" positions to a csv file. I also saved the the negative dataset. All I need to do now is save the bin label with each entry so that I can load in this information when I find my F1 scores per bin. All I'm trying to do is separate the entries. So, my CSV will need two columns "Entry" and "size_bin".
+
+```{r}
+alt_pep_counts_2 <- alt_pep_counts %>%
+  select(Entry, alt_peptides) %>%
+  distinct()
+
+```
+
+Double checking the number of entries and counts per group:
+```{r}
+alt_pep_counts_2 %>%
+  group_by(alt_peptides) %>%
+  dplyr::count() 
+```
+
+Double checking the sum of the counts (it should add up to 320)
+```{r}
+alt_pep_counts_2 %>%
+  dplyr::count()
+```
+We need to filter down to the Entries in "positive_labels_save" from "group_2_analysis.Rmd".
+
+```{r}
+filtered_alt_pep_counts <- positive_labels_save %>%
+  select(Entry) %>%
+  distinct() %>% 
+  inner_join(alt_pep_counts_2)
+```
+The reason we needed to filter out some entries is that the positive labels df has filtered-out entries. This is because some cleavage sites are right after the signal (not needed) and some entries are mature peptides (don't have the cleavage sites). Those are filtered out right before we save the positive labels df. 
+
+Now we want to look at the counts again to decide how to bin the entries. 
+Let's look at the number of Entries per group:
+```{r}
+filtered_alt_pep_counts %>%
+  group_by(alt_peptides) %>%
+  dplyr::count() 
+```
+
+Now let's go back to the "filtered_alt_pep_counts" df and add a label for the following 4 bins: "1_alt_pep", "2_alt_pep", "3-6_alt_pep", ">6_alt_pep". 
+```{r}
+categorize_alt_pep <- function(alt_pep_count) {
+  case_when(
+    alt_pep_count == 1           ~ "1_alt_pep",
+    alt_pep_count == 2           ~ "2_alt_pep",
+    alt_pep_count >= 3 & alt_pep_count <= 6 ~ "3-6_alt_pep",
+    alt_pep_count > 6            ~ ">6_alt_pep",
+    TRUE                          ~ NA_character_
+  )
+}
+
+
+labeled_bins <- filtered_alt_pep_counts %>%
+  mutate(bin = categorize_alt_pep(alt_peptides))
+```
+
+Now let's count how many data points/Entries we have per bin.
+```{r}
+labeled_bins %>%
+  group_by(bin) %>%
+  dplyr::count() 
+```
+Now I want to know the distribution of cleavage site residues per bin. 
+I will use "positive_labels_save" to extract the Entry and residue. I will add the alt pep count labels to this df. 
+```{r}
+dist_aa_per_bin <- labeled_bins %>%
+  select(bin, Entry) %>%
+  distinct() %>%
+  left_join(positive_labels_save)
+```
+
+Now let's plot the discribution of amino acids within each "bin":
+```{r}
+library(dplyr)
+library(forcats)
+library(tidyr)
+
+dist_aa_per_bin2 <- dist_aa_per_bin %>% 
+  mutate(
+    bin = recode_factor(
+      bin,
+      ">6_alt_pep"  = "> 6 peptides",
+      "3-6_alt_pep" = "3-6 peptides",
+      "2_alt_pep"   = "2 peptides",
+      "1_alt_pep"   = "1 peptide"
+    )
+  )
+
+counts <- dist_aa_per_bin2 %>%
+  dplyr::count(bin, residue) %>%
+  complete(bin, residue, fill = list(n = 0))
+
+# order residues by count in the "> 6 peptides" bin
+order_levels <- counts %>%
+  filter(bin == "> 6 peptides") %>%
+  arrange(desc(n)) %>%
+  pull(residue)
+
+counts <- counts %>%
+  mutate(residue = factor(residue, levels = order_levels))
+
+# Plot: one facet per bin, with a common ordering based on >6 peptides
+ggplot(counts, aes(x = residue, y = n)) +
+  geom_col(fill = "steelblue") +
+  geom_text(
+    aes(label = n),
+    vjust = -0.3,
+    size  = 2.5
+  ) +
+  facet_wrap(~ bin, scales = "free_x") +
+  scale_x_discrete(name = "Residue") +
+  scale_y_continuous(limits = c(0, 670)) +
+  labs(
+    x = "Residue",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x      = element_text(angle = 90, vjust = 0.5),
+    strip.background = element_rect(fill = "#f0f0f0")
+  )
+
+```
+
+Now, we need to save the labels and calculate the F1 scores for each SAE feature per bin. 
+Saving the labels:
+```{r}
+labeled_bins_save <- labeled_bins %>%
+  select(Entry, bin) %>%
+  distinct()
+
+#write.csv(labeled_bins_save, "../../data/concept_groups/sequences/group_2/training/alt_peptide_bins.csv", row.names = FALSE)
+```
+
+
+#==========================================================================================================================================
+# I got the F1 scores (modified/hybrid) per bin using the following python script: get_training_F1_scores_binned.py
+#===========================================================================================================================================
+
+Loading winning thresholds from the 4 bins:
+
+```{r}
+`bin_>6_alt_pep`  <- read.csv(file = "../../data/concept_groups/F1_scores/group_2/binned_F1/winning_thresholds_>6_alt_pep.csv")
+`bin_3-6_alt_pep` <- read.csv(file = "../../data/concept_groups/F1_scores/group_2/binned_F1/winning_thresholds_3-6_alt_pep.csv")
+bin_2_alt_pep     <- read.csv(file = "../../data/concept_groups/F1_scores/group_2/binned_F1/winning_thresholds_2_alt_pep.csv")
+bin_1_alt_pep     <- read.csv(file = "../../data/concept_groups/F1_scores/group_2/binned_F1/winning_thresholds_1_alt_pep.csv")
+```
+
+Now I am ordering the features by F1 score for each bin, then taking the top 50 from each bin and saving into a single df.
+```{r}
+# take top 50 from each and tag with a 'bin' column
+top50_6 <- `bin_>6_alt_pep` %>%
+  arrange(desc(winning_F1_score)) %>%
+  slice_head(n = 50) %>%
+  mutate(bin = ">6_alt_pep")
+
+top50_3_6 <- `bin_3-6_alt_pep` %>%
+  arrange(desc(winning_F1_score)) %>%
+  slice_head(n = 50) %>%
+  mutate(bin = "3-6_alt_pep")
+
+top50_2 <- bin_2_alt_pep %>%
+  arrange(desc(winning_F1_score)) %>%
+  slice_head(n = 50) %>%
+  mutate(bin = "2_alt_pep")
+
+top50_1 <- bin_1_alt_pep %>%
+  arrange(desc(winning_F1_score)) %>%
+  slice_head(n = 50) %>%
+  mutate(bin = "1_alt_pep")
+
+# combine into one data.frame
+top50_all_bins <- bind_rows(top50_6, top50_3_6, top50_2, top50_1)
+```
+
+Now I am going to plot the F1 scores per bin:
+```{r}
+top50_all_bins <- top50_all_bins %>%
+  mutate(
+    bin = recode_factor(
+      bin,
+      ">6_alt_pep"  = "> 6 peptides",
+      "3-6_alt_pep" = "3-6 peptides",
+      "2_alt_pep"   = "2 peptides",
+      "1_alt_pep"   = "1 peptide"
+    )
+  )
+
+# ordering bins:
+top50_all_bins$bin <- factor(
+  top50_all_bins$bin,
+  levels = c("1 peptide", "2 peptides", "3-6 peptides", "> 6 peptides") 
+)
+
+ggplot(top50_all_bins, aes(x = bin, y = winning_F1_score)) +
+  geom_violin(trim = FALSE, fill = "lightblue") +
+  geom_sina(size = 1, alpha = 0.6) +
+  #stat_summary(fun = mean, geom = "crossbar", width = 0.5, color = "darkblue") +
+  labs(
+    y     = "Winning F1 Score",
+    title = "Distribution of Winning F1 Scores per Bin"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title.x = element_blank()  # remove x-axis label
+  )
+```
+
+Now I want to track the features between the bins. I ask: do the same features appear across bins? 
+So, I decided to make a jitter plot with the same feaures connected by lines
+
+```{r}
+
+set.seed(42)  # so the jitter is reproducible
+
+# 1) turn your bin factor into numeric positions
+# 2) add a jitter offset (the same for line & point)
+top50_all_bins <- top50_all_bins %>%
+  mutate(
+    bin_num  = as.numeric(bin),
+    x_jitter = bin_num + runif(n(), -0.15, 0.15)
+  )
+
+# 1) Flag how many bins each feature appears in
+top50_flagged <- top50_all_bins %>%
+  add_count(feature, name = "n_bins") %>%
+  mutate(
+    share_group = factor(
+      n_bins,
+      levels = 1:4,
+      labels = c(
+        "Unique (1 bin)",
+        "Shared (2 bins)",
+        "Shared (3 bins)",
+        "Shared (4 bins)"
+      )
+    )
+  )
+
+# 2) Plot lines & points both colored by share_group
+ggplot(top50_flagged,
+       aes(
+         x     = x_jitter,
+         y     = winning_F1_score,
+         group = feature,
+         color = share_group
+       )) +
+  geom_line(size = 0.4, alpha = 0.6) +
+  geom_point(size = 4, alpha = 0.9) +
+  scale_color_manual(
+    name   = "Feature sharing",
+    values = c(
+      "Unique (1 bin)"   = "yellow",
+      "Shared (2 bins)"  = "orange",
+      "Shared (3 bins)"  = "darkgreen",
+      "Shared (4 bins)"  = "darkblue"
+    )
+  ) +
+  scale_x_continuous(
+    breaks = 1:4,
+    labels = levels(top50_all_bins$bin),
+    name   = "Bin"
+  ) +
+  labs(y = "Winning F1 Score") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right",
+    axis.title.x = element_blank()
+  )
+
+
+```
+
+Now I want to split the groups (colors) into separate plots so that I can better see what is being shared:
+
+```{r}
+library(ggrepel)   # for geom_text_repel()
+
+col_map   <- c(
+  "Unique (1 bin)"   = "yellow",
+  "Shared (2 bins)"  = "orange",
+  "Shared (3 bins)"  = "darkgreen",
+  "Shared (4 bins)"  = "darkblue"
+)
+plot_list <- split(top50_flagged, top50_flagged$share_group)
+
+# compute global y-limits if you want consistent scaling
+ylim_global <- range(top50_flagged$winning_F1_score, na.rm = TRUE)
+
+for(group in names(plot_list)) {
+  df <- plot_list[[group]]
+  
+  # 1 row per feature: pick the point in the right‐most bin
+  label_df <- df %>%
+    group_by(feature) %>%
+    filter(x_jitter == max(x_jitter)) %>%
+    ungroup()
+  
+  p <- ggplot(df, aes(x = x_jitter, y = winning_F1_score, group = feature)) +
+    geom_line(color = col_map[group], size = 0.4, alpha = 0.6) +
+    geom_point(color = col_map[group], size = 4, alpha = 0.9) +
+    
+    # add labels, repelled so they don’t overlap
+    geom_text_repel(
+      data       = label_df,
+      aes(label  = feature),
+      nudge_x    = 0.1,          # push labels a bit to the right
+      direction  = "y",          # only move up/down if needed
+      hjust      = 0,            # left-justify text
+      segment.size = 0.2,
+      size       = 3
+    ) +
+    
+    scale_x_continuous(
+      breaks = 1:4,
+      labels = levels(top50_all_bins$bin),
+      name   = "Bin"
+    ) +
+    scale_y_continuous(
+      limits = ylim_global,
+      name   = "Winning F1 Score"
+    ) +
+    labs(title = group) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title.x = element_blank())
+  
+  print(p)
+}
+
+```
+#--------------------------------------------------------------------------------------------------------------------------------------------------
+# Top 20 features per group:
+#--------------------------------------------------------------------------------------------------------------------------------------------------
+
+Now let's repeat the same analysis, only with the top 20 features:
+```{r}
+# take top 50 from each and tag with a 'bin' column
+top20_6 <- `bin_>6_alt_pep` %>%
+  arrange(desc(winning_F1_score)) %>%
+  slice_head(n = 20) %>%
+  mutate(bin = ">6_alt_pep")
+
+top20_3_6 <- `bin_3-6_alt_pep` %>%
+  arrange(desc(winning_F1_score)) %>%
+  slice_head(n = 20) %>%
+  mutate(bin = "3-6_alt_pep")
+
+top20_2 <- bin_2_alt_pep %>%
+  arrange(desc(winning_F1_score)) %>%
+  slice_head(n = 20) %>%
+  mutate(bin = "2_alt_pep")
+
+top20_1 <- bin_1_alt_pep %>%
+  arrange(desc(winning_F1_score)) %>%
+  slice_head(n = 20) %>%
+  mutate(bin = "1_alt_pep")
+
+# combine into one data.frame
+top20_all_bins <- bind_rows(top20_6, top20_3_6, top20_2, top20_1)
+```
+
+plotting F1 scores again: 
+
+Now I am going to plot the F1 scores per bin:
+```{r}
+top20_all_bins <- top20_all_bins %>%
+  mutate(
+    bin = recode_factor(
+      bin,
+      ">6_alt_pep"  = "> 6 peptides",
+      "3-6_alt_pep" = "3-6 peptides",
+      "2_alt_pep"   = "2 peptides",
+      "1_alt_pep"   = "1 peptide"
+    )
+  )
+
+# ordering bins:
+top20_all_bins$bin <- factor(
+  top20_all_bins$bin,
+  levels = c("1 peptide", "2 peptides", "3-6 peptides", "> 6 peptides") 
+)
+
+ggplot(top20_all_bins, aes(x = bin, y = winning_F1_score)) +
+  geom_violin(trim = FALSE, fill = "lightblue") +
+  geom_sina(size = 1, alpha = 0.6) +
+  #stat_summary(fun = mean, geom = "crossbar", width = 0.5, color = "darkblue") +
+  labs(
+    y     = "Winning F1 Score",
+    title = "Distribution of Winning F1 Scores per Bin"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title.x = element_blank()  # remove x-axis label
+  )
+```
+
+```{r}
+
+set.seed(42)  # so the jitter is reproducible
+
+# 1) turn your bin factor into numeric positions
+# 2) add a jitter offset (the same for line & point)
+top20_all_bins <- top20_all_bins %>%
+  mutate(
+    bin_num  = as.numeric(bin),
+    x_jitter = bin_num + runif(n(), -0.15, 0.15)
+  )
+
+# 1) Flag how many bins each feature appears in
+top20_flagged <- top20_all_bins %>%
+  add_count(feature, name = "n_bins") %>%
+  mutate(
+    share_group = factor(
+      n_bins,
+      levels = 1:4,
+      labels = c(
+        "Unique (1 bin)",
+        "Shared (2 bins)",
+        "Shared (3 bins)",
+        "Shared (4 bins)"
+      )
+    )
+  )
+
+# 2) Plot lines & points both colored by share_group
+ggplot(top20_flagged,
+       aes(
+         x     = x_jitter,
+         y     = winning_F1_score,
+         group = feature,
+         color = share_group
+       )) +
+  geom_line(size = 0.4, alpha = 0.6) +
+  geom_point(size = 4, alpha = 0.9) +
+  scale_color_manual(
+    name   = "Feature sharing",
+    values = c(
+      "Unique (1 bin)"   = "yellow",
+      "Shared (2 bins)"  = "orange",
+      "Shared (3 bins)"  = "darkgreen",
+      "Shared (4 bins)"  = "darkblue"
+    )
+  ) +
+  scale_x_continuous(
+    breaks = 1:4,
+    labels = levels(top20_all_bins$bin),
+    name   = "Bin"
+  ) +
+  labs(y = "Winning F1 Score") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right",
+    axis.title.x = element_blank()
+  )
+
+
+```
+
+
+```{r}
+library(ggrepel)   # for geom_text_repel()
+
+col_map   <- c(
+  "Unique (1 bin)"   = "yellow",
+  "Shared (2 bins)"  = "orange",
+  "Shared (3 bins)"  = "darkgreen",
+  "Shared (4 bins)"  = "darkblue"
+)
+plot_list <- split(top20_flagged, top20_flagged$share_group)
+
+# compute global y-limits if you want consistent scaling
+ylim_global <- range(top20_flagged$winning_F1_score, na.rm = TRUE)
+
+for(group in names(plot_list)) {
+  df <- plot_list[[group]]
+  
+  # 1 row per feature: pick the point in the right‐most bin
+  label_df <- df %>%
+    group_by(feature) %>%
+    filter(x_jitter == max(x_jitter)) %>%
+    ungroup()
+  
+  p <- ggplot(df, aes(x = x_jitter, y = winning_F1_score, group = feature)) +
+    geom_line(color = col_map[group], size = 0.4, alpha = 0.6) +
+    geom_point(color = col_map[group], size = 4, alpha = 0.9) +
+    
+    # add labels, repelled so they don’t overlap
+    geom_text_repel(
+      data       = label_df,
+      aes(label  = feature),
+      nudge_x    = 0.1,          # push labels a bit to the right
+      direction  = "y",          # only move up/down if needed
+      hjust      = 0,            # left-justify text
+      segment.size = 0.2,
+      size       = 3
+    ) +
+    
+    scale_x_continuous(
+      breaks = 1:4,
+      labels = levels(top20_all_bins$bin),
+      name   = "Bin"
+    ) +
+    scale_y_continuous(
+      limits = ylim_global,
+      name   = "Winning F1 Score"
+    ) +
+    labs(title = group) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title.x = element_blank())
+  
+  print(p)
+}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

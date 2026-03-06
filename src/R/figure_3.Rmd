@@ -1,0 +1,459 @@
+---
+title: "figure_3"
+output: html_document
+date: "2026-01-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggforce)
+```
+
+```{r}
+# ── Input files ────────────────────────────────────────────────
+esm2_file <- "/Volumes/T7 Shield/ESM2_F1_scores/winning_thresholds_esm2_l18.csv"
+interplm_file <- "/Volumes/T7 Shield/layer_18_F1_scores/winning_thresholds_l18.csv"
+```
+
+```{r}
+# ── Load ESM-2 (already winning thresholds) ─────────────────────
+esm2_df <- read_csv(esm2_file, show_col_types = FALSE) %>%
+  transmute(
+    model = "ESM-2",
+    F1 = winning_F1_score,
+    threshold = winning_threshold
+  ) %>%
+  filter(F1 > 0.5)
+
+# ── Load InterPLM winning thresholds ───────────────────────────
+interplm_df <- read_csv(interplm_file, show_col_types = FALSE) %>%
+  transmute(
+    model = "InterPLM",
+    F1 = winning_F1_score,
+    threshold = winning_threshold
+  ) %>%
+  filter(F1 > 0.5)
+```
+
+```{r}
+# ── Combine ─────────────────────────────────────────────────────
+plot_df <- bind_rows(esm2_df, interplm_df) %>%
+  mutate(model = factor(model, levels = c("ESM-2", "InterPLM")))
+
+# ── Compute means for overlay ───────────────────────────────────
+means_df <- plot_df %>%
+  group_by(model) %>%
+  summarise(mean_F1 = mean(F1), .groups = "drop")
+```
+
+```{r}
+# ── Violin plot ────────────────────────────────────────────────
+
+library(tidyverse)
+library(ggforce)
+
+f1_plot <- plot_df %>%
+ggplot(aes(x = model, y = F1, fill = model)) +
+  # ESM-2 violin (keep narrower if desired)
+  geom_violin(
+    data = subset(plot_df, model == "ESM-2"),
+    aes(fill = model),
+    trim = FALSE,
+    scale = "width",
+    width = 0.4,      # <- control ESM-2 width here
+    adjust = 2,
+    alpha = 0.6,
+    color = "gray30"
+  ) +
+
+  # InterPLM violin (can be wider)
+  geom_violin(
+    data = subset(plot_df, model == "InterPLM"),
+    aes(fill = model),
+    trim = FALSE,
+    scale = "width",
+    width = 0.9,      # <- control InterPLM width here
+    adjust = 2,
+    alpha = 0.6,
+    color = "gray30"
+  ) +
+
+
+  # ESM-2 points (keep tight)
+  geom_sina(
+    data = subset(plot_df, model == "ESM-2"),
+    aes(color = model),
+    size = 0.4,
+    alpha = 0.35,
+    maxwidth = 0.25
+  ) +
+
+  # InterPLM points (spread wider)
+  geom_sina(
+    data = subset(plot_df, model == "InterPLM"),
+    aes(color = model),
+    size = 0.4,
+    alpha = 0.35,
+    maxwidth = 0.9
+  ) +
+
+  # Mean F1 as black point
+  geom_point(
+    data = means_df,
+    aes(x = model, y = mean_F1),
+    color = "black",
+    size = 3
+  ) +
+
+  scale_fill_manual(
+    values = c(
+      "ESM-2"    = "#56B4E9",
+      "InterPLM" = "#E69F00"
+    ),
+    guide = "none"
+  ) +
+  scale_color_manual(
+    values = c(
+      "ESM-2"    = "#2C7FB8",
+      "InterPLM" = "#CC6F00"
+    ),
+    guide = "none"
+  ) +
+  scale_x_discrete(expand = expansion(mult = c(0.2, 0.2))) +
+  coord_cartesian(ylim = c(0.5, 1.0)) +
+  labs(
+    x = NULL,
+    y = "F1 score"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    axis.text.x  = element_text(size = 12),
+    axis.title.y = element_text(size = 13)
+  )
+
+f1_plot
+```
+
+# calculating statistics between the distributions. 
+
+```{r}
+mean_ci <- function(x, conf = 0.95, nboot = 5000) {
+  x <- x[is.finite(x)]  # drop NA / NaN / Inf
+
+  boot_means <- replicate(
+    nboot,
+    mean(sample(x, replace = TRUE))
+  )
+
+  alpha <- (1 - conf) / 2
+
+  tibble(
+    mean = mean(x),
+    ymin = quantile(boot_means, alpha, na.rm = TRUE),
+    ymax = quantile(boot_means, 1 - alpha, na.rm = TRUE)
+  )
+}
+```
+
+```{r}
+# Mean + CI per model
+stats_df <- plot_df %>%
+  group_by(model) %>%
+  summarise(
+    mean = mean_ci(F1)$mean,
+    ymin = mean_ci(F1)$ymin,
+    ymax = mean_ci(F1)$ymax,
+    .groups = "drop"
+  )
+
+stats_df
+```
+
+```{r}
+plot_df <- plot_df %>%
+  mutate(
+    xpos = if_else(model == "ESM-2", 1, 2)
+  )
+
+stats_df <- stats_df %>%
+  mutate(
+    xpos = if_else(model == "ESM-2", 1, 2)
+  )
+
+# ── Violin plot ────────────────────────────────────────────────
+
+library(tidyverse)
+library(ggforce)
+
+f1_plot <- ggplot(plot_df, aes(x = xpos, y = F1, fill = model)) +
+
+  # ESM-2 violin
+  geom_violin(
+    data = subset(plot_df, model == "ESM-2"),
+    aes(x = xpos, y = F1, fill = model, color = model),
+    trim = FALSE,
+    scale = "width",
+    width = 0.6,
+    adjust = 2,
+    alpha = 0.6
+  ) +
+
+  # InterPLM violin
+  geom_violin(
+    data = subset(plot_df, model == "InterPLM"),
+    aes(x = xpos, y = F1, fill = model, color = model),
+    trim = FALSE,
+    scale = "width",
+    width = 0.9,
+    adjust = 2,
+    alpha = 0.6
+  ) +
+
+  # Mean ± CI (perfectly centered)
+  geom_pointrange(
+    data = stats_df,
+    aes(x = xpos, y = mean, ymin = ymin, ymax = ymax),
+    color = "black",
+    size = 0.4
+  ) +
+
+  scale_fill_manual(values = c("ESM-2" = "#9c3d80", "InterPLM" = "#008080"), guide = "none") +
+  scale_color_manual(values = c("ESM-2" = "#6e1855", "InterPLM" = "#004c4c"), guide = "none") +
+  
+  # Correct x-axis ticks
+  scale_x_continuous(
+    breaks = c(1, 2),
+    labels = c("ESM-2", "InterPLM"),
+    expand = expansion(mult = c(0.15, 0.15))
+  ) +
+
+  scale_y_continuous(
+  breaks = seq(0.5, 1.0, by = 0.1),
+  limits = c(0.5, 1.0),
+  expand = expansion(mult = c(0, 0))
+  ) +
+  labs(
+    x = NULL,
+    y = expression(F[1]~score)
+  ) +
+  theme_cowplot()
+
+f1_plot
+```
+
+Doing the wilkox test
+```{r}
+wilcox_res <- wilcox.test(
+  F1 ~ model,
+  data = plot_df,
+  exact = FALSE
+)
+
+wilcox_res
+```
+Interpretation: The distributions are different
+
+Pannel B (counts)
+```{r}
+count_df <- plot_df %>%
+  count(model, name = "n_features")
+
+count_plot <- ggplot(count_df, aes(x = model, y = n_features, fill = model)) +
+  geom_col(width = 0.6, color = "gray30", alpha = 0.85) +
+  geom_text(
+    aes(label = n_features),
+    vjust = -0.4,
+    size = 4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "ESM-2"    = "#6e1855",
+      "InterPLM" = "#008080"
+    ),
+    guide = "none"
+  ) +
+  scale_y_continuous(
+  expand = expansion(mult = c(0, 0.1)),
+  breaks = seq(0, max(count_df$n_features), by = 500)
+  ) +
+  labs(
+    x = NULL,
+    y = expression("Number of features (" * F[1] * " > 0.5)")
+  ) +
+  theme_cowplot()
+
+count_plot
+```
+
+# thresholds plot (panel c)
+
+For means/labels:
+```{r}
+mean_ci <- function(x, conf = 0.95, nboot = 5000) {
+  x <- x[is.finite(x)]
+  boot_means <- replicate(nboot, mean(sample(x, replace = TRUE)))
+  alpha <- (1 - conf) / 2
+  tibble(
+    mean = mean(x),
+    ymin = quantile(boot_means, alpha, na.rm = TRUE),
+    ymax = quantile(boot_means, 1 - alpha, na.rm = TRUE)
+  )
+}
+```
+
+```{r}
+threshold_stats_df <- plot_df %>%
+  group_by(model) %>%
+  summarise(
+    mean = mean_ci(threshold)$mean,
+    ymin = mean_ci(threshold)$ymin,
+    ymax = mean_ci(threshold)$ymax,
+    .groups = "drop"
+  )
+
+threshold_stats_df
+```
+
+```{r}
+threshold_plot <- ggplot(plot_df, aes(x = model, y = threshold)) +
+
+  geom_violin(
+    trim = FALSE, scale = "width",
+    width = 0.9, alpha = 0.4,
+    aes(fill = model, color = model)   
+  ) +
+  geom_pointrange(
+  data = threshold_stats_df,
+  aes(x = model, y = mean, ymin = ymin, ymax = ymax),
+  color = "black",
+  size = 0.4
+  ) +
+  scale_fill_manual(values = c("ESM-2" = "#9c3d80", "InterPLM" = "#008080"), guide = "none") +
+  scale_color_manual(values = c("ESM-2" = "#6e1855", "InterPLM" = "#004c4c"), guide = "none") +
+  scale_y_continuous(
+  breaks = c(0.0, 0.2, 0.4, 0.6, 0.8),
+  limits = c(0.0, 0.85),
+  expand = expansion(mult = c(0,0))
+  ) +
+  labs(x = NULL, y = "Winning threshold") +
+  theme_cowplot()
+
+threshold_plot
+```
+#===============================================================================
+# Showcasing the strongest Interplm features
+#===============================================================================
+```{r}
+top15_interplm <- read_csv(interplm_file, show_col_types = FALSE) %>%
+  arrange(desc(winning_F1_score)) %>%
+  slice_head(n = 15) %>%
+  mutate(
+    feature = factor(
+      feature,
+      levels = rev(feature)   # for horizontal plotting
+    )
+  )
+
+top15_interplm
+```
+
+```{r}
+top15_interplm <- top15_interplm %>%
+  mutate(
+    winning_threshold = factor(
+      winning_threshold,
+      levels = c(0, 0.15, 0.3, 0.4, 0.5, 0.6)
+    )
+  )
+
+top15_plot <- ggplot(
+  top15_interplm,
+  aes(
+    x = winning_F1_score,
+    y = feature,
+    fill = winning_threshold
+  )
+) +
+  geom_col(color = "gray30", width = 0.7) +
+  scale_fill_manual(
+  values = c(
+    "0"    = "#f2fafa",
+    "0.15" = "#b2d8d8",
+    "0.3"  = "#519c9c",
+    "0.4"  = "red",
+    "0.5"  = "#006666",
+    "0.6"  = "#003636"
+  ),
+  name = "Winning\nthreshold"
+  ) +
+  scale_x_continuous(
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  coord_cartesian(xlim = c(0.5, 1.0)) +
+  labs(
+    x = expression(Winning~F[1]~score),
+    y = "InterPLM feature ID"
+  ) +
+  labs(
+    x = expression(Winning~F[1]~score),
+    y = "InterPLM feature ID"
+  ) +
+  theme_cowplot()
+top15_plot
+```
+
+
+# combining into final panel:
+```{r}
+library(cowplot)
+
+# Top row: three plots
+top_row <- plot_grid(
+  f1_plot,
+  threshold_plot,
+  count_plot,
+  ncol = 3,
+  labels = c("a.", "b.", "c."),
+  rel_widths = c(1, 1, 1)
+)
+
+# Bottom row: single plot spanning full width
+bottom_row <- plot_grid(
+  top15_plot,
+  ncol = 1,
+  labels = "d."
+)
+
+# Combine into final panel
+final_plot <- plot_grid(
+  top_row,
+  bottom_row,
+  ncol = 1,
+  rel_heights = c(1, 1.5)  # adjust if bottom should be taller
+)
+
+final_plot
+
+```
+
+
+
+
+
+
+Saving the plot:
+```{r}
+ggsave(
+  filename = "../../figures/paper_figures/Figure_3_F1_score_analysis.png",
+  plot = final_plot,
+  width = 8,
+  height = 9,
+  dpi = 400
+)
+```
+
+

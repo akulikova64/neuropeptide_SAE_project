@@ -1,0 +1,2260 @@
+---
+title: "secratome_analysis"
+output: html_document
+date: "2025-08-20"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cowplot)
+library(ggforce)
+library(ggridges)
+options(scipen = 999)
+library(colorspace)
+library(glue)
+library(purrr)
+library(stringr)
+```
+
+#============================================================================================
+# LOGISTIC REGRESSION MODEL
+#============================================================================================
+
+
+Loading the secratome annotations:
+```{r}
+secratome_annotations <- read.delim(file = "../../data/secratome_annotations.tsv", sep="\t", na = c("", "NA", "#N/A"))
+```
+
+Loading the raw logreg (70 features) prediction probabilities for each residue:
+
+```{r}
+secratome_logreg_predicitons <- read.csv(file = "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/logreg_secratome/graphpart_40/secratome_logreg_probs_70.csv")
+```
+
+Let's now take only the higheset probabiltiy per entry and delete the large
+"secratome_logreg_predictions"
+
+```{r}
+clean_logreg_sec_pred <- secratome_logreg_predicitons %>%
+  group_by(Entry) %>%
+  summarise(highest_prob = max(probability, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(highest_prob))
+```
+
+Removing the large secratome df (over 4 million rows)
+```{r}
+rm(secratome_logreg_predicitons)
+```
+
+Let's clean the secratome annotations and then join the log reg predictions. 
+
+```{r}
+final_secratome_df <- secratome_annotations %>%
+  select(Entry, Sequence, Length, Signal.peptide, Peptide, Protein.names, Function..CC., Gene.Ontology..molecular.function.) %>%
+  rename(Signal_peptide = Signal.peptide,
+         Protein_names = Protein.names,
+         Protein_function = Function..CC.,
+         Go_function = Gene.Ontology..molecular.function.) %>%
+  select(Entry, Protein_names, Protein_function, Go_function, Signal_peptide, Peptide, Sequence, Length)
+  #select(Entry, Protein_names, highest_prob, Protein_function, Go_function, Signal_peptide, Peptide, Sequence, Length)
+```
+
+Now I want to add an additional column ("Neuropeptide") 
+that will flag the secreted proteins as neuropeptide/hormone peptides. 
+
+```{r}
+secr_neuro_flags <- read.csv(file = "../../data/secratome_neuropeptide_flags.csv")
+```
+
+Now let's join the two df together.
+```{r}
+final_secratome_df <- final_secratome_df %>%
+  inner_join(secr_neuro_flags) %>%
+  select(Entry, Protein_names, neuropeptide, everything())
+```
+Let's count the number of neuropeptides we have:
+
+```{r}
+final_secratome_df %>%
+  group_by(neuropeptide) %>%
+  dplyr::count()
+```
+```{r}
+#for_interactive_plot (see interactive_plot_secratome)
+sec_neuro <- final_secratome_df %>%
+  filter(neuropeptide == TRUE) %>%
+  select(Entry, Protein_names, Sequence, Go_function)
+
+write.csv(sec_neuro, "../../data/neuropeptides_human_secratome.csv", row.names = FALSE)
+```
+
+
+Now let's bin the secratome by highest probability and 
+look at the proportion of neuropeptides within each bin. 
+
+```{r}
+
+# 0.10-wide bins
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_summary <- final_secratome_df %>%
+  mutate(
+    logreg_prob = as.numeric(logreg_prob),
+    neuropeptide = as.logical(neuropeptide),
+    prob_bin = cut(
+      logreg_prob, breaks = brks, include_lowest = TRUE, right = TRUE, labels = labels
+    )
+  ) %>%
+  filter(!is.na(prob_bin)) %>%                  # drop NAs in probability/bin
+  group_by(prob_bin) %>%
+  summarise(
+    n = n(),
+    n_neuro  = sum(neuropeptide == TRUE, na.rm = TRUE),
+    pct_neuropeptides = if_else(n > 0, 100 * n_neuro / n, NA_real_),
+    .groups = "drop"
+  ) %>%
+  # ensure empty bins appear as 0%
+  complete(prob_bin = factor(labels, levels = labels),
+           fill = list(n = 0, pct_neuropeptides = 0))
+```
+
+```{r}
+
+ggplot(bin_summary, aes(x = prob_bin, y = pct_neuropeptides)) +
+  geom_col(width = 0.9,
+           fill = "cornsilk",
+           color = "gray70") +
+  geom_text(aes(label = n_neuro),
+            vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, 5),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "log reg probability bin",
+    y = "% neuropeptides",
+    title = "Neuropeptides per secratome bin (log_reg)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+Now I want to see how the secratome is distributed across the bins:
+```{r}
+# --- Percent of secratome per probability bin ---
+library(forcats)
+
+
+# 1) Count all secratome rows per bin (fill missing bins with 0)
+bin_secratome_summary <- final_bins %>%
+  count(prob_bin, name = "n_total") %>%
+  tidyr::complete(prob_bin, fill = list(n_total = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(as.factor(prob_bin)))
+
+# 2) Denominator = all secratome rows across all bins
+total_secratome <- sum(bin_secratome_summary$n_total)
+
+bin_secratome_summary <- bin_secratome_summary %>%
+  mutate(
+    pct_of_secratome = if_else(
+      rep(total_secratome > 0, dplyr::n()),
+      100 * n_total / total_secratome,
+      NA_real_
+    )
+  )
+
+# 3) Plot: percent of *entire secratome* per bin (labels show n_total)
+ymax <- max(bin_secratome_summary$pct_of_secratome, na.rm = TRUE)
+ggplot(bin_secratome_summary, aes(x = prob_bin, y = pct_of_secratome)) +
+  geom_col(width = 0.9, fill = "#e8f1ff", color = "gray70") +
+  geom_text(aes(label = n_total), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, ymax * 1.15),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "highest probability bin",
+    y = "% of secratome",
+    title = "Secratome distributed across probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+
+Now I want to see the percent of neuropeptides per bin out of all neuropeptides:
+
+```{r}
+# 1) Bin by highest_prob (0–0.1, 0.1–0.2, …)
+final_bins <- final_secratome_df %>%
+  mutate(prob_bin = cut(
+    logreg_prob,
+    breaks = seq(0, 1, by = 0.1),
+    include.lowest = TRUE,
+    right = FALSE
+  ))
+```
+
+```{r}
+# 2) Keep only neuropeptides, count per bin, fill missing bins with 0
+bin_neuro_summary <- final_bins %>%
+  filter(neuropeptide == TRUE) %>%
+  count(prob_bin, name = "n_neuro") %>%
+  tidyr::complete(prob_bin, fill = list(n_neuro = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(as.factor(prob_bin)))
+
+# 3) Denominator = all neuropeptides across all bins
+total_neuro <- sum(bin_neuro_summary$n_neuro)
+
+bin_neuro_summary <- bin_neuro_summary %>%
+  mutate(
+    pct_of_all_neuropeptides = if_else(
+      rep(total_neuro > 0, dplyr::n()),
+      100 * n_neuro / total_neuro,
+      NA_real_
+    )
+  )
+```
+
+```{r}
+# 4) Plot: percent of *all* neuropeptides per bin (labels show n_neuro)
+ggplot(bin_neuro_summary, aes(x = prob_bin, y = pct_of_all_neuropeptides)) +
+  geom_col(width = 0.9, fill = "cornsilk", color = "gray70") +
+  geom_text(aes(label = n_neuro), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, 60),  # adjust if your percents exceed 5%
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "log reg probability bin",
+    y = "% of all neuropeptides",
+    title = "Neuropeptides distributed across probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Now I want to rank the secratome proteins, filter for only the neuropeptides
+and plot the rank vs highest probability.
+
+```{r}
+for_ranking_logreg <- final_secratome_df %>%
+  select(Entry, Protein_names, neuropeptide, logreg_prob) %>%
+  mutate(neuropeptide = as.logical(neuropeptide)) %>%
+  filter(!is.na(logreg_prob)) %>%
+  arrange(desc(logreg_prob), Entry) %>%
+  mutate(rank = row_number()) %>%       
+  filter(neuropeptide == TRUE)
+```
+
+```{r}
+
+plot_df <- for_ranking_logreg %>%
+  mutate(
+    logreg_prob = as.numeric(logreg_prob),
+    rank        = as.integer(rank)
+  )
+
+ranking_plot <- ggplot(plot_df, aes(x = logreg_prob, y = rank)) +
+  geom_point(
+    size = 2.4, alpha = 0.85, color = "#2c7fb8"
+  ) +
+  scale_y_reverse() +  # rank 1 at the top
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+  labs(
+    x = "highest log reg probability",
+    y = "rank (1 = highest)",
+    title = "Neuropeptides ranked by highest log reg probability"
+  ) +
+  theme_minimal(base_size = 12)
+
+
+
+ranking_plot
+```
+
+
+#============================================================================================
+# CRF MODEL
+#============================================================================================
+
+
+Let's add the crf prediction on the cecratome (175 features, 20 iterations):
+
+```{r}
+secratome_crf_predicitons <- read.csv(file = "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/crf_secratome/graphpart_40/secratome_crf_probs_175.csv")
+```
+
+```{r}
+clean_crf_sec_pred <- secratome_crf_predicitons %>%
+  group_by(Entry) %>%
+  summarise(crf_prob = max(probability, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(crf_prob))
+```
+
+Removing the large secratome df (over 4 million rows)
+```{r}
+rm(secratome_crf_predicitons)
+```
+
+
+Let's join the crf predictions to the final df. 
+
+```{r}
+final_secratome_df <- final_secratome_df %>%
+  rename("logreg_prob" = highest_prob) %>%
+  inner_join(clean_crf_sec_pred) 
+
+```
+```{r}
+final_secratome_df <- final_secratome_df %>%
+  select(Entry, Protein_names, logreg_prob, crf_prob, neuropeptide, everything())
+```
+
+Now let's bin the secratome by crf_prob and 
+look at the proportion of neuropeptides within each bin. 
+
+```{r}
+
+# 0.10-wide bins
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_summary <- final_secratome_df %>%
+  mutate(
+    crf_prob = as.numeric(crf_prob),
+    neuropeptide = as.logical(neuropeptide),
+    prob_bin = cut(
+      crf_prob, breaks = brks, include_lowest = TRUE, right = TRUE, labels = labels
+    )
+  ) %>%
+  filter(!is.na(prob_bin)) %>%                  # drop NAs in probability/bin
+  group_by(prob_bin) %>%
+  summarise(
+    n = n(),
+    n_neuro  = sum(neuropeptide == TRUE, na.rm = TRUE),
+    pct_neuropeptides = if_else(n > 0, 100 * n_neuro / n, NA_real_),
+    .groups = "drop"
+  ) %>%
+  # ensure empty bins appear as 0%
+  complete(prob_bin = factor(labels, levels = labels),
+           fill = list(n = 0, pct_neuropeptides = 0))
+```
+
+```{r}
+
+ggplot(bin_summary, aes(x = prob_bin, y = pct_neuropeptides)) +
+  geom_col(width = 0.9,
+           fill = "cornsilk",
+           color = "gray70") +
+  geom_text(aes(label = n_neuro),
+            vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, 20),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "crf probability bin",
+    y = "% neuropeptides",
+    title = "Neuropeptides per secratome bin (CRF)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+Now I want to see how the secratome is distributed across the bins:
+```{r}
+# --- Percent of secratome per CRF-probability bin (counts labeled) ---
+
+# 0.10-wide bins (reuse your brks/labels)
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_secratome <- final_secratome_df %>%
+  mutate(
+    crf_prob = as.numeric(crf_prob),
+    prob_bin = cut(crf_prob, breaks = brks, include_lowest = TRUE,
+                   right = TRUE, labels = labels)
+  ) %>%
+  filter(!is.na(prob_bin)) %>%
+  count(prob_bin, name = "n_total") %>%
+  tidyr::complete(prob_bin = factor(labels, levels = labels),
+                  fill = list(n_total = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(prob_bin))
+
+total_secratome <- sum(bin_secratome$n_total)
+
+bin_secratome <- bin_secratome %>%
+  mutate(pct_of_secratome = 100 * n_total /
+           dplyr::if_else(total_secratome > 0, total_secratome, NA_real_))
+
+# dynamic y-limit with a little headroom for labels
+ymax <- max(bin_secratome$pct_of_secratome, na.rm = TRUE)
+
+ggplot(bin_secratome, aes(x = prob_bin, y = pct_of_secratome)) +
+  geom_col(width = 0.9, fill = "#e8f1ff", color = "gray70") +
+  geom_text(aes(label = n_total), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, ymax * 1.15),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "CRF probability bin",
+    y = "% of secratome",
+    title = "Secratome distributed across CRF probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+for_ranking_crf <- final_secratome_df %>%
+  select(Entry, Protein_names, neuropeptide, crf_prob) %>%
+  mutate(neuropeptide = as.logical(neuropeptide)) %>%
+  filter(!is.na(crf_prob)) %>%
+  arrange(desc(crf_prob), Entry) %>%
+  mutate(rank = row_number()) %>%       
+  filter(neuropeptide == TRUE)
+```
+
+```{r}
+
+plot_df <- for_ranking_crf %>%
+  mutate(
+    logreg_prob = as.numeric(crf_prob),
+    rank        = as.integer(rank)
+  )
+
+ranking_plot <- ggplot(plot_df, aes(x = crf_prob, y = rank)) +
+  geom_point(
+    size = 2.4, alpha = 0.85, color = "#2c7fb8"
+  ) +
+  scale_y_reverse() +  # rank 1 at the top
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+  labs(
+    x = "highest crf probability",
+    y = "rank (1 = highest)",
+    title = "Neuropeptides ranked by highest CRF probability"
+  ) +
+  theme_minimal(base_size = 12)
+
+
+
+ranking_plot
+```
+
+
+
+#============================================================================================
+# RANDOM FOREST MODEL
+#============================================================================================
+
+
+
+```{r}
+secratome_ranfor_predicitons <- read.csv(file = "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/ranfor_secratome/graphpart_40/secratome_ranfor_probs_70.csv")
+```
+
+```{r}
+clean_ranfor_sec_pred <- secratome_ranfor_predicitons %>%
+  group_by(Entry) %>%
+  summarise(ranfor_prob = max(probability, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(ranfor_prob))
+```
+
+Removing the large secratome df (over 4 million rows)
+```{r}
+rm(secratome_ranfor_predicitons)
+```
+
+Let's join the ranfor predictions to the final df. 
+
+```{r}
+final_secratome_df <- final_secratome_df %>%
+  inner_join(clean_ranfor_sec_pred) %>%
+  select(Entry, Protein_names, logreg_prob, crf_prob, ranfor_prob, neuropeptide, everything())
+```
+
+Now let's bin the secratome by ranfor_prob and 
+look at the proportion of neuropeptides within each bin. 
+
+```{r}
+
+# 0.10-wide bins
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_summary <- final_secratome_df %>%
+  mutate(
+    ranfor_prob = as.numeric(ranfor_prob),
+    neuropeptide = as.logical(neuropeptide),
+    prob_bin = cut(
+      ranfor_prob, breaks = brks, include_lowest = TRUE, right = TRUE, labels = labels
+    )
+  ) %>%
+  filter(!is.na(prob_bin)) %>%                  # drop NAs in probability/bin
+  group_by(prob_bin) %>%
+  summarise(
+    n = n(),
+    n_neuro  = sum(neuropeptide == TRUE, na.rm = TRUE),
+    pct_neuropeptides = if_else(n > 0, 100 * n_neuro / n, NA_real_),
+    .groups = "drop"
+  ) %>%
+  # ensure empty bins appear as 0%
+  complete(prob_bin = factor(labels, levels = labels),
+           fill = list(n = 0, pct_neuropeptides = 0))
+```
+
+```{r}
+
+ggplot(bin_summary, aes(x = prob_bin, y = pct_neuropeptides)) +
+  geom_col(width = 0.9,
+           fill = "cornsilk",
+           color = "gray70") +
+  geom_text(aes(label = n_neuro),
+            vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, 20),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "ranfor probability bin",
+    y = "% neuropeptides",
+    title = "Neuropeptides per secratome bin (Random Forest)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+Now I want to see how the secratome is distributed across the bins:
+```{r}
+# --- Percent of secratome per CRF-probability bin (counts labeled) ---
+
+# 0.10-wide bins (reuse your brks/labels)
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_secratome <- final_secratome_df %>%
+  mutate(
+    ranfor_prob = as.numeric(ranfor_prob),
+    prob_bin = cut(ranfor_prob, breaks = brks, include_lowest = TRUE,
+                   right = TRUE, labels = labels)
+  ) %>%
+  filter(!is.na(prob_bin)) %>%
+  count(prob_bin, name = "n_total") %>%
+  tidyr::complete(prob_bin = factor(labels, levels = labels),
+                  fill = list(n_total = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(prob_bin))
+
+total_secratome <- sum(bin_secratome$n_total)
+
+bin_secratome <- bin_secratome %>%
+  mutate(pct_of_secratome = 100 * n_total /
+           dplyr::if_else(total_secratome > 0, total_secratome, NA_real_))
+
+# dynamic y-limit with a little headroom for labels
+ymax <- max(bin_secratome$pct_of_secratome, na.rm = TRUE)
+
+ggplot(bin_secratome, aes(x = prob_bin, y = pct_of_secratome)) +
+  geom_col(width = 0.9, fill = "#e8f1ff", color = "gray70") +
+  geom_text(aes(label = n_total), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, ymax * 1.15),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "ran for probability bin",
+    y = "% of secratome",
+    title = "Secratome distributed across Ranfor probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+for_ranking_ranfor <- final_secratome_df %>%
+  select(Entry, Protein_names, neuropeptide, ranfor_prob) %>%
+  mutate(neuropeptide = as.logical(neuropeptide)) %>%
+  filter(!is.na(ranfor_prob)) %>%
+  arrange(desc(ranfor_prob), Entry) %>%
+  mutate(rank = row_number()) %>%       
+  filter(neuropeptide == TRUE)
+```
+
+```{r}
+
+plot_df <- for_ranking_ranfor %>%
+  mutate(
+    logreg_prob = as.numeric(ranfor_prob),
+    rank        = as.integer(rank)
+  )
+
+ranking_plot <- ggplot(plot_df, aes(x = ranfor_prob, y = rank)) +
+  geom_point(
+    size = 2.4, alpha = 0.85, color = "#2c7fb8"
+  ) +
+  scale_y_reverse() +  # rank 1 at the top
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+  labs(
+    x = "highest random forest probability",
+    y = "rank (1 = highest)",
+    title = "Neuropeptides ranked by highest RF probability"
+  ) +
+  theme_minimal(base_size = 12)
+
+
+
+ranking_plot
+```
+#====================================================================================================
+# LOGISTIC REGRESSION- False positives
+#====================================================================================================
+
+Let's look at some of the raw prediction of the false positives (non-neuropeptides) with high probabilities.
+
+First, let's choose which entries we want to look at:
+
+```{r}
+false_pos <- c("A0A1U9X7H4", "A6NGW2", "A0A087WTU6")
+```
+
+Next, let's load the log regression raw probabilities.
+```{r}
+secratome_logreg_predicitons <- read.csv(file = "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/logreg_secratome/graphpart_40/secratome_logreg_probs_70.csv")
+
+filtered_logreg <- secratome_logreg_predicitons %>%
+  filter(Entry %in% false_pos)
+
+rm(secratome_logreg_predicitons)
+```
+
+Let's add the annotations to the df:
+```{r}
+filtered_logreg <- filtered_logreg %>%
+  inner_join(secratome_annotations)
+```
+Now let's plot the 
+
+```{r}
+library(ggiraph)
+
+pick_protein_name <- function(df) {
+  if ("Protein_names" %in% names(df)) return(df$Protein_names)
+  if ("Protein.names" %in% names(df)) return(df$Protein.names)
+  if ("Protein.name"  %in% names(df)) return(df$Protein.name)
+  rep(NA_character_, nrow(df))
+}
+
+# helper for missing text
+`%||%` <- function(x, y) if (is.null(x) || length(x) == 0 || is.na(x)) y else x
+
+plot_entry_logreg <- function(entry_id) {
+  df_e <- filtered_logreg %>%
+    dplyr::filter(Entry == entry_id) %>%
+    dplyr::mutate(
+      probability    = as.numeric(probability),
+      residue_number = as.integer(residue_number),
+      protein_name   = pick_protein_name(cur_data())
+    ) %>%
+    dplyr::arrange(residue_number) %>%
+    dplyr::mutate(
+      tooltip = glue(
+        "Entry:   {Entry}\n",
+        "Protein: {protein_name[1] %||% '—'}\n",
+        "Pos:     {residue_number}\n",
+        "Residue: {residue}\n",
+        "P:       {sprintf('%.3f', probability)}"
+      ),
+      data_id = paste0(Entry, "_", residue_number)
+    )
+
+  if (nrow(df_e) == 0) stop(glue("No rows for Entry = {entry_id}"))
+
+  seq_len <- max(df_e$residue_number, na.rm = TRUE)
+  x_by <- dplyr::case_when(
+    seq_len > 1000 ~ 100L,
+    seq_len >  800 ~  80L,
+    seq_len >  400 ~  50L,
+    seq_len >  150 ~  20L,
+    TRUE           ~  10L
+  )
+  x_breaks <- seq(0, seq_len, by = x_by)
+
+  p <- ggplot(df_e, aes(x = residue_number, y = probability)) +
+    ggiraph::geom_col_interactive(
+      aes(tooltip = tooltip, data_id = data_id),
+      width = 1, fill = "steelblue"
+    ) +
+    geom_hline(yintercept = 0.5, linetype = "dashed",
+               color = "firebrick", linewidth = 0.25) +
+    scale_x_continuous(breaks = x_breaks, expand = expansion(0)) +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(
+      x = "Residue position",
+      y = "Probability",
+      title = glue("{entry_id} — {df_e$protein_name[1] %||% 'Protein name unavailable'}")
+    ) +
+    theme_minimal(base_size = 12)
+    # If you want a blank X axis entirely, uncomment:
+    # + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+  ggiraph::girafe(
+    ggobj = p,
+    width_svg = 10, height_svg = 4,
+    options = list(
+      ggiraph::opts_hover(css = "fill-opacity:1;cursor:pointer;"),
+      ggiraph::opts_toolbar(saveaspng = TRUE)
+    )
+  )
+}
+
+# build & print interactive widgets for your chosen entries
+widgets <- purrr::map(false_pos, plot_entry_logreg)
+widgets  # in RMarkdown, just returning the list will print the widgets
+```
+
+#====================================================================================================
+# CRF- False positives
+#====================================================================================================
+
+```{r}
+false_pos <- c("B2RB33", "C9JWI2", "P24347", "A0A384ME91")
+```
+
+Next, let's load the log regression raw probabilities.
+```{r}
+secratome_crf_predicitons <- read.csv(file = "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/crf_secratome/graphpart_40/secratome_crf_probs_175.csv")
+
+filtered_crf <- secratome_crf_predicitons %>%
+  filter(Entry %in% false_pos)
+
+rm(secratome_crf_predicitons)
+```
+
+Let's add the annotations to the df:
+```{r}
+filtered_crf <- filtered_crf %>%
+  inner_join(secratome_annotations)
+```
+Now let's plot 
+
+```{r}
+library(ggiraph)
+
+pick_protein_name <- function(df) {
+  if ("Protein_names" %in% names(df)) return(df$Protein_names)
+  if ("Protein.names" %in% names(df)) return(df$Protein.names)
+  if ("Protein.name"  %in% names(df)) return(df$Protein.name)
+  rep(NA_character_, nrow(df))
+}
+`%||%` <- function(x, y) if (is.null(x) || length(x) == 0 || is.na(x)) y else x
+
+# entries present in the CRF data
+entries_available <- sort(unique(filtered_crf$Entry))
+entries_to_plot   <- intersect(false_pos, entries_available)
+entries_missing   <- setdiff(false_pos, entries_available)
+if (length(entries_missing)) {
+  message("⚠️ Missing in CRF predictions: ", paste(entries_missing, collapse = ", "))
+}
+
+plot_entry_crf <- function(entry_id) {
+  df_e <- filtered_crf %>%
+    filter(Entry == entry_id) %>%
+    mutate(
+      probability    = as.numeric(probability),
+      residue_number = as.integer(residue_number),
+      protein_name   = pick_protein_name(cur_data())
+    ) %>%
+    arrange(residue_number) %>%
+    mutate(
+      tooltip = glue(
+        "Entry:   {Entry}\n",
+        "Protein: {protein_name[1] %||% '—'}\n",
+        "Pos:     {residue_number}\n",
+        "Residue: {residue}\n",
+        "P:       {sprintf('%.3f', probability)}"
+      ),
+      data_id = paste0(Entry, "_", residue_number)
+    )
+
+  if (nrow(df_e) == 0) stop(glue("No rows for Entry = {entry_id}"))
+
+  seq_len <- max(df_e$residue_number, na.rm = TRUE)
+  x_by <- dplyr::case_when(
+    seq_len > 1000 ~ 100L,
+    seq_len >  800 ~  80L,
+    seq_len >  400 ~  50L,
+    seq_len >  150 ~  20L,
+    TRUE           ~  10L
+  )
+  x_breaks <- seq(0, seq_len, by = x_by)
+
+  p <- ggplot(df_e, aes(x = residue_number, y = probability)) +
+    ggiraph::geom_col_interactive(
+      aes(tooltip = tooltip, data_id = data_id),
+      width = 1, fill = "steelblue"
+    ) +
+    geom_hline(yintercept = 0.5, linetype = "dashed",
+               color = "firebrick", linewidth = 0.25) +
+    scale_x_continuous(breaks = x_breaks, expand = expansion(0)) +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(
+      x = "Residue position",
+      y = "CRF probability",
+      title = glue("{entry_id} — {df_e$protein_name[1] %||% 'Protein name unavailable'}")
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text.x  = element_text(angle = 0),
+      axis.ticks.x = element_line()
+    )
+
+  ggiraph::girafe(
+    ggobj = p,
+    width_svg = 10, height_svg = 4,
+    options = list(
+      ggiraph::opts_hover(css = "fill-opacity:1;cursor:pointer;"),
+      ggiraph::opts_toolbar(saveaspng = TRUE)
+    )
+  )
+}
+
+# build interactive widgets for the entries that exist
+widgets <- purrr::map(entries_to_plot, plot_entry_crf)
+widgets
+```
+
+#====================================================================================================
+# Random Forest - FALSE positives and some TRUE positives
+#====================================================================================================
+
+```{r}
+false_pos <- c("P55103", "B2RBW9", "P29400", "T1S9D5")
+```
+
+Next, let's load the log regression raw probabilities.
+```{r}
+secratome_ranfor_predicitons <- read.csv(file = "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/ranfor_secratome/graphpart_40/secratome_ranfor_probs_70.csv")
+
+filtered_ranfor <- secratome_ranfor_predicitons %>%
+  filter(Entry %in% false_pos)
+
+rm(secratome_ranfor_predicitons)
+```
+
+Let's add the annotations to the df:
+```{r}
+filtered_ranfor <- filtered_ranfor %>%
+  inner_join(secratome_annotations)
+```
+
+```{r}
+pick_protein_name <- function(df) {
+  if ("Protein_names" %in% names(df)) return(df$Protein_names)
+  if ("Protein.names" %in% names(df)) return(df$Protein.names)
+  if ("Protein.name"  %in% names(df)) return(df$Protein.name)
+  rep(NA_character_, nrow(df))
+}
+`%||%` <- function(x, y) if (is.null(x) || length(x) == 0 || is.na(x)) y else x
+
+# entries actually present in the RF data
+entries_available <- sort(unique(filtered_ranfor$Entry))
+entries_to_plot   <- intersect(false_pos, entries_available)
+entries_missing   <- setdiff(false_pos, entries_available)
+if (length(entries_missing)) {
+  message("⚠️ Missing in RF predictions: ", paste(entries_missing, collapse = ", "))
+}
+
+plot_entry_ranfor <- function(entry_id) {
+  df_e <- filtered_ranfor %>%
+    filter(Entry == entry_id) %>%
+    mutate(
+      probability    = as.numeric(probability),
+      residue_number = as.integer(residue_number),
+      protein_name   = pick_protein_name(cur_data())
+    ) %>%
+    arrange(residue_number) %>%
+    mutate(
+      tooltip = glue(
+        "Entry:   {Entry}\n",
+        "Protein: {protein_name[1] %||% '—'}\n",
+        "Pos:     {residue_number}\n",
+        "Residue: {residue}\n",
+        "RF P:    {sprintf('%.3f', probability)}"
+      ),
+      data_id = paste0(Entry, "_", residue_number)
+    )
+
+  if (nrow(df_e) == 0) stop(glue("No rows for Entry = {entry_id}"))
+
+  seq_len <- max(df_e$residue_number, na.rm = TRUE)
+  x_by <- dplyr::case_when(
+    seq_len > 1000 ~ 100L,
+    seq_len >  800 ~  80L,
+    seq_len >  400 ~  50L,
+    seq_len >  150 ~  20L,
+    TRUE           ~  10L
+  )
+  x_breaks <- seq(1, seq_len, by = x_by)
+
+  p <- ggplot(df_e, aes(x = residue_number, y = probability)) +
+    ggiraph::geom_col_interactive(
+      aes(tooltip = tooltip, data_id = data_id),
+      width = 1, fill = "steelblue"
+    ) +
+    geom_hline(yintercept = 0.5, linetype = "dashed",
+               color = "firebrick", linewidth = 0.25) +
+    scale_x_continuous(breaks = x_breaks, expand = expansion(0)) +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(
+      x = "Residue position",
+      y = "RF probability",
+      title = glue("{entry_id} — {df_e$protein_name[1] %||% 'Protein name unavailable'}")
+    ) +
+    theme_minimal(base_size = 12)
+
+  ggiraph::girafe(
+    ggobj = p,
+    width_svg = 10, height_svg = 4,
+    options = list(
+      ggiraph::opts_hover(css = "fill-opacity:1;cursor:pointer;"),
+      ggiraph::opts_toolbar(saveaspng = TRUE)
+    )
+  )
+}
+
+# build interactive widgets for the entries that exist
+widgets <- purrr::map(entries_to_plot, plot_entry_ranfor)
+widgets
+```
+
+#=============================================================================================================================
+# After filtering away enzymes
+#=============================================================================================================================
+
+Redo this part (and filter out)
+```{r}
+secratome_no_enzymes <- read.csv(file = "../../data/secretome_filter_out_enzymes_5/secretome_filtered_nonenzymes_nocsdhit.csv")
+```
+
+```{r}
+secratome_no_ig <- read.csv(file = "../../data/secretome_filter_out_enzymes_5/secretome_no_immonoglobulins.csv")
+```
+
+```{r}
+final_secratome_no_ig <- final_secratome_df %>%
+  inner_join(secratome_no_ig)
+```
+First of all, let's see how many neuropeptides are left (hopefully all)
+```{r}
+final_secratome_no_ig %>%
+  select(neuropeptide) %>%
+  count(neuropeptide)
+```
+
+```{r}
+count(final_secratome_no_ig)
+```
+
+
+Let's look at the crf probabilities now, using the no-enzymes dataset.
+
+First, let's join the final df to the no_enzyme one to remove all enzymes.
+
+```{r}
+final_sec_no_enzymes <- final_secratome_df %>%
+  inner_join(secratome_no_enzymes)
+```
+First of all, let's see how many neuropeptides are left (hopefully all)
+```{r}
+final_sec_no_enzymes %>%
+  select(neuropeptide) %>%
+  count(neuropeptide)
+```
+
+```{r}
+count(final_sec_no_enzymes)
+```
+
+Looking at what neurpeptides were removed during the filter
+```{r}
+# rows from final_secratome_df that were dropped by the inner_join
+removed <- final_secratome_df %>%
+  anti_join(secratome_no_enzymes, by = "Entry")
+
+# how many of the removed were annotated neuropeptides?
+removed %>% count(neuropeptide)
+
+# list the neuropeptides that were removed
+removed_neuropeptides <- removed %>%
+  filter(neuropeptide == TRUE) %>%
+  select(Entry, everything())
+```
+
+
+
+
+Let's look at the the neuropeptides per bin now.
+
+Now let's bin the secratome by ranfor_prob and 
+look at the proportion of neuropeptides within each bin. 
+
+```{r}
+
+# 0.10-wide bins
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_summary <- final_sec_no_enzymes %>%
+  mutate(
+    ranfor_prob = as.numeric(ranfor_prob),
+    neuropeptide = as.logical(neuropeptide),
+    prob_bin = cut(
+      ranfor_prob, breaks = brks, include_lowest = TRUE, right = TRUE, labels = labels
+    )
+  ) %>%
+  filter(!is.na(prob_bin)) %>%                  # drop NAs in probability/bin
+  group_by(prob_bin) %>%
+  summarise(
+    n = n(),
+    n_neuro  = sum(neuropeptide == TRUE, na.rm = TRUE),
+    pct_neuropeptides = if_else(n > 0, 100 * n_neuro / n, NA_real_),
+    .groups = "drop"
+  ) %>%
+  # ensure empty bins appear as 0%
+  complete(prob_bin = factor(labels, levels = labels),
+           fill = list(n = 0, pct_neuropeptides = 0))
+```
+
+```{r}
+
+ggplot(bin_summary, aes(x = prob_bin, y = pct_neuropeptides)) +
+  geom_col(width = 0.9,
+           fill = "cornsilk",
+           color = "gray70") +
+  geom_text(aes(label = n_neuro),
+            vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, 10),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "ranfor probability bin",
+    y = "% neuropeptides",
+    title = "Neuropeptides per secratome bin (Random Forest)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+Now I want to see how the secratome is distributed across the bins:
+```{r}
+# --- Percent of secratome per CRF-probability bin (counts labeled) ---
+
+# 0.10-wide bins (reuse your brks/labels)
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_secratome <- final_sec_no_enzymes %>%
+  mutate(
+    ranfor_prob = as.numeric(ranfor_prob),
+    prob_bin = cut(ranfor_prob, breaks = brks, include_lowest = TRUE,
+                   right = TRUE, labels = labels)
+  ) %>%
+  filter(!is.na(prob_bin)) %>%
+  count(prob_bin, name = "n_total") %>%
+  tidyr::complete(prob_bin = factor(labels, levels = labels),
+                  fill = list(n_total = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(prob_bin))
+
+total_secratome <- sum(bin_secratome$n_total)
+
+bin_secratome <- bin_secratome %>%
+  mutate(pct_of_secratome = 100 * n_total /
+           dplyr::if_else(total_secratome > 0, total_secratome, NA_real_))
+
+# dynamic y-limit with a little headroom for labels
+ymax <- max(bin_secratome$pct_of_secratome, na.rm = TRUE)
+
+ggplot(bin_secratome, aes(x = prob_bin, y = pct_of_secratome)) +
+  geom_col(width = 0.9, fill = "#e8f1ff", color = "gray70") +
+  geom_text(aes(label = n_total), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, ymax * 1.15),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "ran for probability bin",
+    y = "% of secratome",
+    title = "Secratome distributed across Ranfor probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Let's look at Logistic regression:
+
+```{r}
+
+# 0.10-wide bins
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_summary <- final_sec_no_enzymes %>%
+  mutate(
+    ranfor_prob = as.numeric(logreg_prob),
+    neuropeptide = as.logical(neuropeptide),
+    prob_bin = cut(
+      logreg_prob, breaks = brks, include_lowest = TRUE, right = TRUE, labels = labels
+    )
+  ) %>%
+  filter(!is.na(prob_bin)) %>%                  # drop NAs in probability/bin
+  group_by(prob_bin) %>%
+  summarise(
+    n = n(),
+    n_neuro  = sum(neuropeptide == TRUE, na.rm = TRUE),
+    pct_neuropeptides = if_else(n > 0, 100 * n_neuro / n, NA_real_),
+    .groups = "drop"
+  ) %>%
+  # ensure empty bins appear as 0%
+  complete(prob_bin = factor(labels, levels = labels),
+           fill = list(n = 0, pct_neuropeptides = 0))
+```
+
+```{r}
+
+ggplot(bin_summary, aes(x = prob_bin, y = pct_neuropeptides)) +
+  geom_col(width = 0.9,
+           fill = "cornsilk",
+           color = "gray70") +
+  geom_text(aes(label = n_neuro),
+            vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, 40),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "logreg probability bin",
+    y = "% neuropeptides",
+    title = "Neuropeptides per secratome bin (Logistic regression)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+Now, I want to look at the top bin:
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# change `final_secratome_df$logreg_prob` to your actual prob column if different
+top_bin_summary <- final_sec_no_enzymes %>%
+  filter(logreg_prob >= 0.90) %>%
+  mutate(
+    # push exact 1.00 down a hair so it falls into the last half-open bin
+    prob_for_cut = pmin(logreg_prob, 0.999999),
+    prob_bin = cut(
+      prob_for_cut,
+      breaks = seq(0.90, 1.00, by = 0.01),   # 0.90–0.91, ..., 0.99–1.00
+      include.lowest = TRUE,
+      right = FALSE,
+      labels = sprintf("[%0.2f–%0.2f)", seq(0.90, 0.99, by = 0.01), seq(0.91, 1.00, by = 0.01))
+    )
+  ) %>%
+  group_by(prob_bin) %>%
+  summarise(
+    n_total = n(),
+    n_neuro = sum(neuropeptide, na.rm = TRUE),
+    pct_neuropeptides = 100 * n_neuro / n_total
+  ) %>%
+  ungroup() %>%
+  # ensure empty bins still appear at 0%
+  complete(
+    prob_bin,
+    fill = list(n_total = 0, n_neuro = 0, pct_neuropeptides = 0)
+  )
+
+ggplot(top_bin_summary, aes(x = prob_bin, y = pct_neuropeptides)) +
+  geom_col(width = 0.9, fill = "cornsilk", color = "gray70") +
+  geom_text(aes(label = n_neuro), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, 50),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "logreg probability bin (0.90–1.00)",
+    y = "% neuropeptides",
+    title = "Neuropeptides per secretome bin (Logistic regression, top decile)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Now I want to see how the secratome is distributed across the bins:
+```{r}
+# --- Percent of secratome per CRF-probability bin (counts labeled) ---
+
+# 0.10-wide bins (reuse your brks/labels)
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_secratome <- final_sec_no_enzymes %>%
+  mutate(
+    logreg_prob = as.numeric(logreg_prob),
+    prob_bin = cut(logreg_prob, breaks = brks, include_lowest = TRUE,
+                   right = TRUE, labels = labels)
+  ) %>%
+  filter(!is.na(prob_bin)) %>%
+  count(prob_bin, name = "n_total") %>%
+  tidyr::complete(prob_bin = factor(labels, levels = labels),
+                  fill = list(n_total = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(prob_bin))
+
+total_secratome <- sum(bin_secratome$n_total)
+
+bin_secratome <- bin_secratome %>%
+  mutate(pct_of_secratome = 100 * n_total /
+           dplyr::if_else(total_secratome > 0, total_secratome, NA_real_))
+
+# dynamic y-limit with a little headroom for labels
+ymax <- max(bin_secratome$pct_of_secratome, na.rm = TRUE)
+
+ggplot(bin_secratome, aes(x = prob_bin, y = pct_of_secratome)) +
+  geom_col(width = 0.9, fill = "#e8f1ff", color = "gray70") +
+  geom_text(aes(label = n_total), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, ymax * 1.15),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "logreg probability bin",
+    y = "% of secratome",
+    title = "Secratome distributed across Logreg probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+```{r}
+# --- Percent of secratome per CRF-probability bin (counts labeled) ---
+
+# 0.01-wide bins across the top slice [0.90, 1.00]
+brks   <- seq(0.90, 1.00, by = 0.01)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_secratome <- final_sec_no_enzymes %>%
+  mutate(
+    logreg_prob = as.numeric(logreg_prob),
+    prob_bin = cut(
+      logreg_prob,
+      breaks = brks,
+      include_lowest = TRUE,
+      right = TRUE,
+      labels = labels
+    )
+  ) %>%
+  filter(!is.na(prob_bin)) %>%
+  count(prob_bin, name = "n_total") %>%
+  tidyr::complete(prob_bin = factor(labels, levels = labels),
+                  fill = list(n_total = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(prob_bin))
+
+total_secratome <- sum(bin_secratome$n_total)
+
+bin_secratome <- bin_secratome %>%
+  mutate(pct_of_secratome = 100 * n_total /
+           dplyr::if_else(total_secratome > 0, total_secratome, NA_real_))
+
+# dynamic y-limit with a little headroom for labels
+ymax <- max(bin_secratome$pct_of_secratome, na.rm = TRUE)
+
+ggplot(bin_secratome, aes(x = prob_bin, y = pct_of_secratome)) +
+  geom_col(width = 0.9, fill = "#e8f1ff", color = "gray70") +
+  geom_text(aes(label = n_total), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, ymax * 1.15),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "logreg probability bin",
+    y = "% of secratome",
+    title = "Secratome distributed across Logreg probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+Let's look at the crf model:
+
+```{r}
+
+# 0.10-wide bins
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_summary <- final_sec_no_enzymes %>%
+  mutate(
+    crf_prob = as.numeric(crf_prob),
+    neuropeptide = as.logical(neuropeptide),
+    prob_bin = cut(
+      crf_prob, breaks = brks, include_lowest = TRUE, right = TRUE, labels = labels
+    )
+  ) %>%
+  filter(!is.na(prob_bin)) %>%                  # drop NAs in probability/bin
+  group_by(prob_bin) %>%
+  summarise(
+    n = n(),
+    n_neuro  = sum(neuropeptide == TRUE, na.rm = TRUE),
+    pct_neuropeptides = if_else(n > 0, 100 * n_neuro / n, NA_real_),
+    .groups = "drop"
+  ) %>%
+  # ensure empty bins appear as 0%
+  complete(prob_bin = factor(labels, levels = labels),
+           fill = list(n = 0, pct_neuropeptides = 0))
+```
+
+```{r}
+
+ggplot(bin_summary, aes(x = prob_bin, y = pct_neuropeptides)) +
+  geom_col(width = 0.9,
+           fill = "cornsilk",
+           color = "gray70") +
+  geom_text(aes(label = n_neuro),
+            vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, 70),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "logreg probability bin",
+    y = "% neuropeptides",
+    title = "Neuropeptides per secratome bin (CRF)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Let's look at the top bin:
+```{r}
+# --- Build bin_summary for the CRF top bin [0.90, 1.00] in 0.01 steps ---
+
+brks   <- seq(0.90, 1.00, by = 0.01)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_summary <- final_sec_no_enzymes %>%
+  mutate(
+    # change 'crf_prob' below if your CRF prob column is named differently
+    crf_prob = as.numeric(crf_prob),
+    prob_bin = cut(crf_prob, breaks = brks, include_lowest = TRUE,
+                   right = TRUE, labels = labels)
+  ) %>%
+  filter(!is.na(prob_bin)) %>%
+  group_by(prob_bin) %>%
+  summarise(
+    n_total = n(),
+    n_neuro = sum(neuropeptide == TRUE, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  tidyr::complete(prob_bin = factor(labels, levels = labels),
+                  fill = list(n_total = 0, n_neuro = 0)) %>%
+  mutate(
+    prob_bin = forcats::fct_inorder(prob_bin),
+    pct_neuropeptides = ifelse(n_total > 0, 100 * n_neuro / n_total, 0)
+  )
+
+ggplot(bin_summary, aes(x = prob_bin, y = pct_neuropeptides)) +
+  geom_col(width = 0.9,
+           fill = "cornsilk",
+           color = "gray70") +
+  geom_text(aes(label = n_neuro),
+            vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, 90),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "logreg probability bin",
+    y = "% neuropeptides",
+    title = "Neuropeptides per secratome bin (CRF)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+```{r}
+# --- Percent of secratome per CRF-probability bin (counts labeled) ---
+
+# 0.10-wide bins (reuse your brks/labels)
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_secratome <- final_sec_no_enzymes %>%
+  mutate(
+    crf_prob = as.numeric(crf_prob),
+    prob_bin = cut(crf_prob, breaks = brks, include_lowest = TRUE,
+                   right = TRUE, labels = labels)
+  ) %>%
+  filter(!is.na(prob_bin)) %>%
+  count(prob_bin, name = "n_total") %>%
+  tidyr::complete(prob_bin = factor(labels, levels = labels),
+                  fill = list(n_total = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(prob_bin))
+
+total_secratome <- sum(bin_secratome$n_total)
+
+bin_secratome <- bin_secratome %>%
+  mutate(pct_of_secratome = 100 * n_total /
+           dplyr::if_else(total_secratome > 0, total_secratome, NA_real_))
+
+# dynamic y-limit with a little headroom for labels
+ymax <- max(bin_secratome$pct_of_secratome, na.rm = TRUE)
+
+ggplot(bin_secratome, aes(x = prob_bin, y = pct_of_secratome)) +
+  geom_col(width = 0.9, fill = "#e8f1ff", color = "gray70") +
+  geom_text(aes(label = n_total), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, ymax * 1.15),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "logreg probability bin",
+    y = "% of secratome",
+    title = "Secratome distributed across CRF probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Now, I want to look at the avarage probability across models:
+
+```{r}
+final_sec_no_enzymes <- final_sec_no_enzymes %>%
+  # ensure numeric (in case they’re characters)
+  mutate(across(c(logreg_prob, crf_prob, ranfor_prob, svm_prob), as.numeric)) %>%
+  mutate(
+    avg_prob = rowMeans(
+      across(c(logreg_prob, crf_prob, ranfor_prob, svm_prob)),
+      na.rm = TRUE
+    )
+  ) %>%
+  select(Entry, Protein_names, avg_prob, everything())
+```
+
+```{r}
+
+# 0.10-wide bins
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_summary <- final_sec_no_enzymes %>%
+  mutate(
+    avg_prob = as.numeric(avg_prob),
+    neuropeptide = as.logical(neuropeptide),
+    prob_bin = cut(
+      avg_prob, breaks = brks, include_lowest = TRUE, right = TRUE, labels = labels
+    )
+  ) %>%
+  filter(!is.na(prob_bin)) %>%                  # drop NAs in probability/bin
+  group_by(prob_bin) %>%
+  summarise(
+    n = n(),
+    n_neuro  = sum(neuropeptide == TRUE, na.rm = TRUE),
+    pct_neuropeptides = if_else(n > 0, 100 * n_neuro / n, NA_real_),
+    .groups = "drop"
+  ) %>%
+  # ensure empty bins appear as 0%
+  complete(prob_bin = factor(labels, levels = labels),
+           fill = list(n = 0, pct_neuropeptides = 0))
+```
+
+```{r}
+
+ggplot(bin_summary, aes(x = prob_bin, y = pct_neuropeptides)) +
+  geom_col(width = 0.9,
+           fill = "cornsilk",
+           color = "gray70") +
+  geom_text(aes(label = n_neuro),
+            vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, 60),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "average probability bin",
+    y = "% neuropeptides",
+    title = "Neuropeptides per secratome bin (Average prob)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+```{r}
+# --- Percent of secratome per CRF-probability bin (counts labeled) ---
+
+# 0.10-wide bins (reuse your brks/labels)
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_secratome <- final_sec_no_enzymes %>%
+  mutate(
+    avg_prob = as.numeric(avg_prob),
+    prob_bin = cut(avg_prob, breaks = brks, include_lowest = TRUE,
+                   right = TRUE, labels = labels)
+  ) %>%
+  filter(!is.na(prob_bin)) %>%
+  count(prob_bin, name = "n_total") %>%
+  tidyr::complete(prob_bin = factor(labels, levels = labels),
+                  fill = list(n_total = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(prob_bin))
+
+total_secratome <- sum(bin_secratome$n_total)
+
+bin_secratome <- bin_secratome %>%
+  mutate(pct_of_secratome = 100 * n_total /
+           dplyr::if_else(total_secratome > 0, total_secratome, NA_real_))
+
+# dynamic y-limit with a little headroom for labels
+ymax <- max(bin_secratome$pct_of_secratome, na.rm = TRUE)
+
+ggplot(bin_secratome, aes(x = prob_bin, y = pct_of_secratome)) +
+  geom_col(width = 0.9, fill = "#e8f1ff", color = "gray70") +
+  geom_text(aes(label = n_total), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, ymax * 1.15),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "average probability bin",
+    y = "% of secratome",
+    title = "Secratome distributed across average probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+Let's add subcellular location to the annothations:
+```{r}
+location <- secratome_annotations %>%
+  select(Entry, Subcellular.location..CC.) %>%
+  rename("location" = Subcellular.location..CC.)
+```
+
+```{r}
+final_sec_no_enzymes <- final_sec_no_enzymes %>%
+  inner_join(location) %>%
+  select(Entry, Protein_names, location, everything())
+```
+```{r}
+write_csv(final_sec_no_enzymes, "../../data/filtered_secratome_15316.csv")
+```
+
+#=======================================================================================================
+Now let's filter out the transmembrane proteins and see how the results change (old) I already
+filter for the transmembrane proteins in the code above. 
+
+Both transmembrane proteins and enzymes have been filtered out here.
+
+```{r}
+secr_no_tm <- read.csv(file = "../../data/secretome_filter_out_nocdhit/uniprot_tm_filter/secretome_nontransmembrane_entries.csv")
+```
+
+```{r}
+final_sec_no_tm <- final_secratome_df %>%
+  inner_join(secr_no_tm)
+```
+
+First of all, let's see how many neuropeptides are left (hopefully all)
+```{r}
+final_sec_no_tm %>%
+  select(neuropeptide) %>%
+  count(neuropeptide)
+```
+
+Find out what neuropeptides you lost.
+
+Now let's plot the linear reg dist:
+
+```{r}
+# --- Percent of secratome per CRF-probability bin (counts labeled) ---
+
+# 0.10-wide bins (reuse your brks/labels)
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_secratome <- final_sec_no_tm %>%
+  mutate(
+    logreg_prob = as.numeric(logreg_prob),
+    prob_bin = cut(logreg_prob, breaks = brks, include_lowest = TRUE,
+                   right = TRUE, labels = labels)
+  ) %>%
+  filter(!is.na(prob_bin)) %>%
+  count(prob_bin, name = "n_total") %>%
+  tidyr::complete(prob_bin = factor(labels, levels = labels),
+                  fill = list(n_total = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(prob_bin))
+
+total_secratome <- sum(bin_secratome$n_total)
+
+bin_secratome <- bin_secratome %>%
+  mutate(pct_of_secratome = 100 * n_total /
+           dplyr::if_else(total_secratome > 0, total_secratome, NA_real_))
+
+# dynamic y-limit with a little headroom for labels
+ymax <- max(bin_secratome$pct_of_secratome, na.rm = TRUE)
+
+ggplot(bin_secratome, aes(x = prob_bin, y = pct_of_secratome)) +
+  geom_col(width = 0.9, fill = "#e8f1ff", color = "gray70") +
+  geom_text(aes(label = n_total), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, ymax * 1.15),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "logreg probability bin",
+    y = "% of secratome",
+    title = "Secratome distributed across Logreg probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+```{r}
+# --- Percent of secratome per CRF-probability bin (counts labeled) ---
+
+# 0.10-wide bins (reuse your brks/labels)
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_secratome <- final_sec_no_tm %>%
+  mutate(
+    crf_prob = as.numeric(crf_prob),
+    prob_bin = cut(crf_prob, breaks = brks, include_lowest = TRUE,
+                   right = TRUE, labels = labels)
+  ) %>%
+  filter(!is.na(prob_bin)) %>%
+  count(prob_bin, name = "n_total") %>%
+  tidyr::complete(prob_bin = factor(labels, levels = labels),
+                  fill = list(n_total = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(prob_bin))
+
+total_secratome <- sum(bin_secratome$n_total)
+
+bin_secratome <- bin_secratome %>%
+  mutate(pct_of_secratome = 100 * n_total /
+           dplyr::if_else(total_secratome > 0, total_secratome, NA_real_))
+
+# dynamic y-limit with a little headroom for labels
+ymax <- max(bin_secratome$pct_of_secratome, na.rm = TRUE)
+
+ggplot(bin_secratome, aes(x = prob_bin, y = pct_of_secratome)) +
+  geom_col(width = 0.9, fill = "#e8f1ff", color = "gray70") +
+  geom_text(aes(label = n_total), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, ymax * 1.15),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "crf probability bin",
+    y = "% of secratome",
+    title = "Secratome distributed across CRF probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+# --- Percent of secratome per CRF-probability bin (counts labeled) ---
+
+# 0.10-wide bins (reuse your brks/labels)
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_secratome <- final_sec_no_tm %>%
+  mutate(
+    ranfor_prob = as.numeric(ranfor_prob),
+    prob_bin = cut(ranfor_prob, breaks = brks, include_lowest = TRUE,
+                   right = TRUE, labels = labels)
+  ) %>%
+  filter(!is.na(prob_bin)) %>%
+  count(prob_bin, name = "n_total") %>%
+  tidyr::complete(prob_bin = factor(labels, levels = labels),
+                  fill = list(n_total = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(prob_bin))
+
+total_secratome <- sum(bin_secratome$n_total)
+
+bin_secratome <- bin_secratome %>%
+  mutate(pct_of_secratome = 100 * n_total /
+           dplyr::if_else(total_secratome > 0, total_secratome, NA_real_))
+
+# dynamic y-limit with a little headroom for labels
+ymax <- max(bin_secratome$pct_of_secratome, na.rm = TRUE)
+
+ggplot(bin_secratome, aes(x = prob_bin, y = pct_of_secratome)) +
+  geom_col(width = 0.9, fill = "#e8f1ff", color = "gray70") +
+  geom_text(aes(label = n_total), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, ymax * 1.15),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "ran for probability bin",
+    y = "% of secratome",
+    title = "Secratome distributed across Ranfor probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#========================================================================================================
+# Analysis of human secratome
+#========================================================================================================
+
+Here, I want to make some confusion matrices of fp, fn, tp and tn for the models on the labeled neuropeptide sequences. 
+
+Loading the secratome annotations (let's test the crf model):
+```{r}
+secratome_crf_predicitons <- read.csv(file = "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/crf_secratome/graphpart_40/secratome_crf_probs_175.csv")
+```
+
+Now I need to filter for the annotated human neuropeptides:
+
+```{r}
+human_neuro <- final_sec_nocdhit %>%
+  select(Entry, Protein_names, neuropeptide, Signal_peptide, Peptide, Sequence) %>%
+  filter(neuropeptide == TRUE) %>%
+  filter(!is.na(Peptide))
+```
+## only 66 Entries out of the 276 have a labeled "peptide" for annotation
+
+
+Now I need to label the cleavage sites.
+```{r}
+library(tidyverse)
+library(stringr)
+
+# human_neuro already filtered to neuropeptides with non-NA Peptide
+# Columns: Entry, Protein_names, neuropeptide, Signal_peptide, Peptide, Sequence
+
+# 1) One row per Entry with length
+base_seqs <- human_neuro %>%
+  transmute(
+    Entry          = as.character(Entry),
+    Protein_names  = as.character(Protein_names),
+    neuropeptide   = as.logical(neuropeptide),
+    Signal_peptide = as.character(Signal_peptide),
+    Peptide        = as.character(Peptide),
+    Sequence       = as.character(Sequence),
+    Length         = nchar(Sequence)
+  ) %>%
+  distinct(Entry, .keep_all = TRUE)
+
+# 2) All peptide ranges like "123..456"
+pep_ranges <- base_seqs %>%
+  select(Entry, Sequence, Length, Peptide) %>%
+  mutate(range_str = str_extract_all(coalesce(Peptide, ""), "\\d+\\.\\.\\d+")) %>%
+  unnest_longer(range_str, keep_empty = TRUE) %>%
+  filter(!is.na(range_str) & range_str != "") %>%
+  separate(range_str, into = c("peptide_start","peptide_end"), sep = "\\.\\.") %>%
+  mutate(
+    peptide_start = as.integer(peptide_start),
+    peptide_end   = as.integer(peptide_end)
+  ) %>%
+  distinct(Entry, peptide_start, peptide_end, Length, Sequence)
+
+# 3) Signal peptide range like "1..21" (if annotated)
+sig_ranges <- base_seqs %>%
+  select(Entry, Signal_peptide) %>%
+  mutate(sig_str = str_extract_all(coalesce(Signal_peptide, ""), "\\d+\\.\\.\\d+")) %>%
+  unnest_longer(sig_str, keep_empty = TRUE) %>%
+  filter(!is.na(sig_str) & sig_str != "") %>%
+  separate(sig_str, into = c("signal_start","signal_end"), sep = "\\.\\.") %>%
+  mutate(
+    signal_start = as.integer(signal_start),
+    signal_end   = as.integer(signal_end)
+  ) %>%
+  group_by(Entry) %>%
+  summarise(
+    signal_start = min(signal_start, na.rm = TRUE),
+    signal_end   = max(signal_end,   na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 4) Cleavage positions:
+#    - include start-side (-2, -1) only if peptide_start != 1 AND NOT right-after-signal
+#    - include end-side (+1, +2) only if peptide_end != Length
+cleavage_positions <- pep_ranges %>%
+  left_join(sig_ranges, by = "Entry") %>%
+  mutate(after_signal = !is.na(signal_end) & (signal_end + 1L == peptide_start)) %>%
+  rowwise() %>%
+  mutate(
+    c1_ok = !is.na(peptide_start) && peptide_start != 1L && !after_signal,
+    c2_ok = !is.na(peptide_end)   && peptide_end   != Length,
+    # build one flat integer vector of candidate positions
+    pos = list(unique(c(
+      if (c1_ok) c(peptide_start - 2L, peptide_start - 1L) else integer(),
+      if (c2_ok) c(peptide_end + 1L,   peptide_end + 2L)   else integer()
+    )))
+  ) %>%
+  ungroup() %>%
+  select(Entry, Length, Sequence, pos) %>%
+  tidyr::unnest_longer(pos, values_to = "residue_number") %>%
+  filter(!is.na(residue_number), residue_number >= 1L, residue_number <= Length) %>%
+  distinct(Entry, residue_number) %>%
+  mutate(cleavage_site = TRUE)
+
+# 5) Long per-residue table (adds residue and TRUE/FALSE label)
+human_neuro_long <- base_seqs %>%
+  select(Entry, Protein_names, neuropeptide, Sequence, Length) %>%
+  rowwise() %>%
+  mutate(residue_tbl = list(
+    tibble(
+      residue_number = seq_len(Length),
+      residue = str_sub(Sequence, seq_len(Length), seq_len(Length))
+    )
+  )) %>%
+  ungroup() %>%
+  select(-Length) %>%
+  unnest(residue_tbl) %>%
+  left_join(cleavage_positions, by = c("Entry", "residue_number")) %>%
+  mutate(cleavage_site = coalesce(cleavage_site, FALSE))
+
+# human_neuro_long has:
+#  Entry, Protein_names, neuropeptide, Sequence, residue_number, residue, cleavage_site (TRUE/FALSE)
+
+```
+
+Now I need to add the crf predictions:
+
+```{r}
+human_neuro_pred <- human_neuro_long %>%
+  inner_join(secratome_crf_predicitons) %>%
+  rename("crf_prob" = probability) %>%
+  mutate(crf_pred = crf_prob > 0.4)
+
+```
+Plotting the confusion matrix of the counts:
+
+```{r}
+# Prepare data: coerce to logical, drop NAs, fix factor order
+df <- human_neuro_pred %>%
+  transmute(
+    truth = as.logical(cleavage_site),
+    pred  = as.logical(crf_pred)
+  ) %>%
+  filter(!is.na(truth), !is.na(pred)) %>%
+  mutate(
+    truth = factor(truth, levels = c(FALSE, TRUE)),
+    pred  = factor(pred,  levels = c(FALSE, TRUE))
+  )
+
+# Confusion matrix counts (ensure all 4 cells exist)
+cm_counts <- df %>%
+  count(truth, pred, name = "n") %>%
+  tidyr::complete(truth = factor(c(FALSE, TRUE), levels = c(FALSE, TRUE)),
+                  pred  = factor(c(FALSE, TRUE), levels = c(FALSE, TRUE)),
+                  fill  = list(n = 0)) %>%
+  mutate(
+    label = case_when(
+      truth == "TRUE"  & pred == "TRUE"  ~ "TP",
+      truth == "TRUE"  & pred == "FALSE" ~ "FN",
+      truth == "FALSE" & pred == "TRUE"  ~ "FP",
+      TRUE                                ~ "TN"
+    ),
+    total = sum(n),
+    pct   = 100 * n / total
+  )
+
+# Scalar counts + metrics
+tp <- cm_counts %>% filter(label == "TP") %>% pull(n) %>% sum()
+tn <- cm_counts %>% filter(label == "TN") %>% pull(n) %>% sum()
+fp <- cm_counts %>% filter(label == "FP") %>% pull(n) %>% sum()
+fn <- cm_counts %>% filter(label == "FN") %>% pull(n) %>% sum()
+
+accuracy    <- (tp + tn) / (tp + tn + fp + fn)
+precision   <- ifelse((tp + fp) > 0, tp / (tp + fp), NA_real_)
+recall      <- ifelse((tp + fn) > 0, tp / (tp + fn), NA_real_)  # sensitivity
+specificity <- ifelse((tn + fp) > 0, tn / (tn + fp), NA_real_)
+f1          <- ifelse(is.na(precision) | is.na(recall) | (precision + recall) == 0,
+                      NA_real_, 2 * precision * recall / (precision + recall))
+bal_acc     <- mean(c(recall, specificity), na.rm = TRUE)
+
+metrics <- tibble(
+  TP = tp, FP = fp, TN = tn, FN = fn,
+  accuracy = accuracy,
+  precision = precision,
+  recall = recall,
+  specificity = specificity,
+  f1 = f1,
+  balanced_accuracy = bal_acc
+)
+print(metrics)
+```
+
+```{r}
+# Plot confusion matrix (truth on rows, predicted on columns)
+ggplot(cm_counts, aes(x = pred, y = truth, fill = n)) +
+  geom_tile(color = "grey80", linewidth = 0.3) +
+  geom_text(aes(label = sprintf("%s\nn = %d\n%.1f%%", label, n, pct)),
+            size = 4, lineheight = 0.95) +
+  scale_fill_gradient(low = "#e6f0ff", high = "#003a99") +
+  labs(
+    x = "Predicted (crf prediction)",
+    y = "Truth (cleavage site)",
+    fill = "Count"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank())
+
+```
+
+Let's add the random forest prediction model:
+
+```{r}
+secratome_ranfor_predicitons <- read.csv(file = "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/ranfor_secratome/graphpart_40/secratome_ranfor_probs_70.csv")
+```
+
+```{r}
+human_neuro_pred <- human_neuro_long %>%
+  inner_join(secratome_ranfor_predicitons) %>%
+  rename("ranfor_prob" = probability) %>%
+  mutate(ranfor_pred = ranfor_prob > 0.5)
+```
+Plotting the confusion matrix of the counts:
+
+```{r}
+# Prepare data: coerce to logical, drop NAs, fix factor order
+df <- human_neuro_pred %>%
+  transmute(
+    truth = as.logical(cleavage_site),
+    pred  = as.logical(ranfor_pred)
+  ) %>%
+  filter(!is.na(truth), !is.na(pred)) %>%
+  mutate(
+    truth = factor(truth, levels = c(FALSE, TRUE)),
+    pred  = factor(pred,  levels = c(FALSE, TRUE))
+  )
+
+# Confusion matrix counts (ensure all 4 cells exist)
+cm_counts <- df %>%
+  count(truth, pred, name = "n") %>%
+  tidyr::complete(truth = factor(c(FALSE, TRUE), levels = c(FALSE, TRUE)),
+                  pred  = factor(c(FALSE, TRUE), levels = c(FALSE, TRUE)),
+                  fill  = list(n = 0)) %>%
+  mutate(
+    label = case_when(
+      truth == "TRUE"  & pred == "TRUE"  ~ "TP",
+      truth == "TRUE"  & pred == "FALSE" ~ "FN",
+      truth == "FALSE" & pred == "TRUE"  ~ "FP",
+      TRUE                                ~ "TN"
+    ),
+    total = sum(n),
+    pct   = 100 * n / total
+  )
+
+# Scalar counts + metrics
+tp <- cm_counts %>% filter(label == "TP") %>% pull(n) %>% sum()
+tn <- cm_counts %>% filter(label == "TN") %>% pull(n) %>% sum()
+fp <- cm_counts %>% filter(label == "FP") %>% pull(n) %>% sum()
+fn <- cm_counts %>% filter(label == "FN") %>% pull(n) %>% sum()
+
+accuracy    <- (tp + tn) / (tp + tn + fp + fn)
+precision   <- ifelse((tp + fp) > 0, tp / (tp + fp), NA_real_)
+recall      <- ifelse((tp + fn) > 0, tp / (tp + fn), NA_real_)  # sensitivity
+specificity <- ifelse((tn + fp) > 0, tn / (tn + fp), NA_real_)
+f1          <- ifelse(is.na(precision) | is.na(recall) | (precision + recall) == 0,
+                      NA_real_, 2 * precision * recall / (precision + recall))
+bal_acc     <- mean(c(recall, specificity), na.rm = TRUE)
+
+metrics <- tibble(
+  TP = tp, FP = fp, TN = tn, FN = fn,
+  accuracy = accuracy,
+  precision = precision,
+  recall = recall,
+  specificity = specificity,
+  f1 = f1,
+  balanced_accuracy = bal_acc
+)
+print(metrics)
+```
+
+```{r}
+# Plot confusion matrix (truth on rows, predicted on columns)
+ggplot(cm_counts, aes(x = pred, y = truth, fill = n)) +
+  geom_tile(color = "grey80", linewidth = 0.3) +
+  geom_text(aes(label = sprintf("%s\nn = %d\n%.1f%%", label, n, pct)),
+            size = 4, lineheight = 0.95) +
+  scale_fill_gradient(low = "#e6f0ff", high = "#003a99") +
+  labs(
+    x = "Predicted (ranfor prediction)",
+    y = "Truth (cleavage site)",
+    fill = "Count"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank())
+
+```
+
+```{r}
+secratome_logreg_predicitons <- read.csv(file = "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/logreg_secratome/graphpart_40/secratome_logreg_probs_70.csv")
+```
+
+```{r}
+human_neuro_pred <- human_neuro_long %>%
+  inner_join(secratome_logreg_predicitons) %>%
+  rename("logreg_prob" = probability) %>%
+  mutate(logreg_pred = logreg_prob > 0.5)
+```
+
+```{r}
+# Prepare data: coerce to logical, drop NAs, fix factor order
+df <- human_neuro_pred %>%
+  transmute(
+    truth = as.logical(cleavage_site),
+    pred  = as.logical(logreg_pred)
+  ) %>%
+  filter(!is.na(truth), !is.na(pred)) %>%
+  mutate(
+    truth = factor(truth, levels = c(FALSE, TRUE)),
+    pred  = factor(pred,  levels = c(FALSE, TRUE))
+  )
+
+# Confusion matrix counts (ensure all 4 cells exist)
+cm_counts <- df %>%
+  count(truth, pred, name = "n") %>%
+  tidyr::complete(truth = factor(c(FALSE, TRUE), levels = c(FALSE, TRUE)),
+                  pred  = factor(c(FALSE, TRUE), levels = c(FALSE, TRUE)),
+                  fill  = list(n = 0)) %>%
+  mutate(
+    label = case_when(
+      truth == "TRUE"  & pred == "TRUE"  ~ "TP",
+      truth == "TRUE"  & pred == "FALSE" ~ "FN",
+      truth == "FALSE" & pred == "TRUE"  ~ "FP",
+      TRUE                                ~ "TN"
+    ),
+    total = sum(n),
+    pct   = 100 * n / total
+  )
+
+# Scalar counts + metrics
+tp <- cm_counts %>% filter(label == "TP") %>% pull(n) %>% sum()
+tn <- cm_counts %>% filter(label == "TN") %>% pull(n) %>% sum()
+fp <- cm_counts %>% filter(label == "FP") %>% pull(n) %>% sum()
+fn <- cm_counts %>% filter(label == "FN") %>% pull(n) %>% sum()
+
+accuracy    <- (tp + tn) / (tp + tn + fp + fn)
+precision   <- ifelse((tp + fp) > 0, tp / (tp + fp), NA_real_)
+recall      <- ifelse((tp + fn) > 0, tp / (tp + fn), NA_real_)  # sensitivity
+specificity <- ifelse((tn + fp) > 0, tn / (tn + fp), NA_real_)
+f1          <- ifelse(is.na(precision) | is.na(recall) | (precision + recall) == 0,
+                      NA_real_, 2 * precision * recall / (precision + recall))
+bal_acc     <- mean(c(recall, specificity), na.rm = TRUE)
+
+metrics <- tibble(
+  TP = tp, FP = fp, TN = tn, FN = fn,
+  accuracy = accuracy,
+  precision = precision,
+  recall = recall,
+  specificity = specificity,
+  f1 = f1,
+  balanced_accuracy = bal_acc
+)
+print(metrics)
+```
+
+```{r}
+# Plot confusion matrix (truth on rows, predicted on columns)
+ggplot(cm_counts, aes(x = pred, y = truth, fill = n)) +
+  geom_tile(color = "grey80", linewidth = 0.3) +
+  geom_text(aes(label = sprintf("%s\nn = %d\n%.1f%%", label, n, pct)),
+            size = 4, lineheight = 0.95) +
+  scale_fill_gradient(low = "#e6f0ff", high = "#003a99") +
+  labs(
+    x = "Predicted (logreg prediction)",
+    y = "Truth (cleavage site)",
+    fill = "Count"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank())
+
+```
+
+#=====================================================================================================
+# SVM predictions
+#=====================================================================================================
+
+```{r}
+secratome_svm_predicitons <- read.csv(file = "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/svm_secratome/graphpart_40/secratome_svm_probs_AUTO.csv")
+```
+
+```{r}
+clean_svm_sec_pred <- secratome_svm_predicitons %>%
+  group_by(Entry) %>%
+  summarise(svm_prob = max(probability, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(svm_prob))
+```
+
+Removing the large secratome df (over 4 million rows)
+```{r}
+rm(secratome_crf_predicitons)
+```
+
+Let's join the svm predictions to the final df. 
+
+```{r}
+final_secratome_df <- final_secratome_df %>%
+  inner_join(clean_svm_sec_pred) %>%
+  select(Entry, Protein_names, logreg_prob, crf_prob, ranfor_prob, svm_prob, neuropeptide, everything())
+```
+
+```{r}
+
+# 0.10-wide bins
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_summary <- final_secratome_df %>%
+  mutate(
+    svm_prob = as.numeric(svm_prob),
+    neuropeptide = as.logical(neuropeptide),
+    prob_bin = cut(
+      svm_prob, breaks = brks, include_lowest = TRUE, right = TRUE, labels = labels
+    )
+  ) %>%
+  filter(!is.na(prob_bin)) %>%                  # drop NAs in probability/bin
+  group_by(prob_bin) %>%
+  summarise(
+    n = n(),
+    n_neuro  = sum(neuropeptide == TRUE, na.rm = TRUE),
+    pct_neuropeptides = if_else(n > 0, 100 * n_neuro / n, NA_real_),
+    .groups = "drop"
+  ) %>%
+  # ensure empty bins appear as 0%
+  complete(prob_bin = factor(labels, levels = labels),
+           fill = list(n = 0, pct_neuropeptides = 0))
+```
+
+```{r}
+
+ggplot(bin_summary, aes(x = prob_bin, y = pct_neuropeptides)) +
+  geom_col(width = 0.9,
+           fill = "cornsilk",
+           color = "gray70") +
+  geom_text(aes(label = n_neuro),
+            vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, 20),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "crf probability bin",
+    y = "% neuropeptides",
+    title = "Neuropeptides per secratome bin (SVM)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Now I want to see how the secratome is distributed across the bins:
+```{r}
+# --- Percent of secratome per CRF-probability bin (counts labeled) ---
+
+# 0.10-wide bins (reuse your brks/labels)
+brks   <- seq(0, 1, by = 0.1)
+labels <- sprintf("%.2f–%.2f", head(brks, -1), tail(brks, -1))
+
+bin_secratome <- final_secratome_df %>%
+  mutate(
+    svm_prob = as.numeric(svm_prob),
+    prob_bin = cut(svm_prob, breaks = brks, include_lowest = TRUE,
+                   right = TRUE, labels = labels)
+  ) %>%
+  filter(!is.na(prob_bin)) %>%
+  count(prob_bin, name = "n_total") %>%
+  tidyr::complete(prob_bin = factor(labels, levels = labels),
+                  fill = list(n_total = 0)) %>%
+  mutate(prob_bin = forcats::fct_inorder(prob_bin))
+
+total_secratome <- sum(bin_secratome$n_total)
+
+bin_secratome <- bin_secratome %>%
+  mutate(pct_of_secratome = 100 * n_total /
+           dplyr::if_else(total_secratome > 0, total_secratome, NA_real_))
+
+# dynamic y-limit with a little headroom for labels
+ymax <- max(bin_secratome$pct_of_secratome, na.rm = TRUE)
+
+ggplot(bin_secratome, aes(x = prob_bin, y = pct_of_secratome)) +
+  geom_col(width = 0.9, fill = "#e8f1ff", color = "gray70") +
+  geom_text(aes(label = n_total), vjust = -0.35, size = 3.5) +
+  scale_y_continuous(
+    limits = c(0, ymax * 1.15),
+    expand = expansion(mult = c(0, 0.12)),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "ran for probability bin",
+    y = "% of secratome",
+    title = "Secratome distributed across SVM probability bins"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+Let's filter out enzymes
+

@@ -1,0 +1,817 @@
+---
+title: "raw_data_cleaning"
+output: html_document
+date: "2025-03-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cowplot)
+library(ggforce)
+library(ggridges)
+options(scipen = 999)
+library(colorspace)
+```
+
+```{r}
+raw_data <- read.delim(file = "../../data/raw_data/neuropeptides_KW-0527.tsv", sep="\t", na = c("", "NA", "#N/A"))
+```
+
+```{r}
+names(raw_data)
+```
+```{r}
+raw_data %>%
+  distinct(Subcellular.location..CC.)
+```
+
+Filtering out receptors:
+```{r}
+raw_data_no_recep <- raw_data %>%
+  filter(!str_detect(Protein.names, "receptor")) 
+```
+
+# extracting all possible localizations:
+```{r}
+all_locations <- raw_data_no_recep %>%
+  mutate(
+    extracted_locations = str_extract_all(Subcellular.location..CC., "(?<=SUBCELLULAR LOCATION: |\\.\\s)[^\\{]+") # Extract locations
+  ) %>%
+  unnest(extracted_locations) %>%
+  mutate(
+    extracted_locations = str_remove_all(extracted_locations, "Note=.*"),  # Remove "Note="
+    extracted_locations = str_replace_all(extracted_locations, "\\[.*?\\]:\\s*", ""),  # Remove "[text]:"
+    extracted_locations = str_replace_all(extracted_locations, "SUBCELLULAR LOCATION:\\s*", ""), # Properly remove "SUBCELLULAR LOCATION:"
+    extracted_locations = str_split(extracted_locations, "[.,;]")  # Split locations by ".", "," or ";"
+  ) %>%
+  unnest(extracted_locations) %>%
+  mutate(
+    extracted_locations = str_trim(extracted_locations), # Remove leading/trailing spaces
+    extracted_locations = na_if(extracted_locations, ""), # Remove empty locations
+    extracted_locations = na_if(extracted_locations, "NA") # Remove "NA" as a location
+  ) %>%
+  distinct(Entry.Name, extracted_locations) %>% # Ensure unique locations per ID
+  na.omit()
+
+expanded_df <- all_locations %>%
+  pivot_wider(
+    names_from = extracted_locations,
+    values_from = extracted_locations,
+    values_fn = function(x) TRUE,  # Set detected locations to TRUE
+    values_fill = list(extracted_locations = NA)  # Fill others with NA
+  )
+
+head(expanded_df)
+```
+
+```{r}
+expanded_df <- expanded_df %>%
+  select(where(~ sum(!is.na(.)) >= 10))
+
+expanded_df %>%
+  summarise_all(~ sum(!is.na(.)))
+```
+
+# Note: the below code needs to be revised. there are multiple isoforms of the peptides and therefore, multiple localizations within the cell.
+```{r}
+clean_data <- raw_data %>%
+  mutate(subcellular_location = ifelse(str_detect(Subcellular.location..CC., "LOCATION: Secreted"), "Secreted", Subcellular.location..CC.)) %>%
+  select(-Subcellular.location..CC.) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "LOCATION: Cell membrane"), "Cell membrane", subcellular_location)) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "LOCATION: [Isoform 1]: Cell membrane"), "Cell membrane", subcellular_location)) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "LOCATION: Cytoplasmic vesicle"), "Cytoplasmic vesicle", subcellular_location)) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "LOCATION: Rough endoplasmic reticulum"), "Endoplasmic reticulum", subcellular_location)) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "LOCATION: Endoplasmic reticulum"), "Endoplasmic reticulum", subcellular_location)) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "LOCATION: Cytoplasm"), "Cytoplasm", subcellular_location)) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "LOCATION: Membrane"), "Membrane", subcellular_location)) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "LOCATION: Nucleus"), "Nucleus", subcellular_location)) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "LOCATION: Mitochondrion"), "Mitochondrion", subcellular_location)) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "LOCATION: Endomembrane"), "Endomembrane", subcellular_location)) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "LOCATION: Peroxisome"), "Peroxisome", subcellular_location)) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "LOCATION: Apical cell membrane"), "Apical cell membrane", subcellular_location)) %>%
+  mutate(subcellular_location = ifelse(str_detect(subcellular_location, "Secreted"), "Secreted", subcellular_location)) 
+
+
+clean_data %>%
+  distinct(subcellular_location) %>%
+  pull()
+```
+
+```{r}
+clean_data <- raw_data_no_recep %>%
+  select(-Subcellular.location..CC.) %>%
+  left_join(expanded_df)
+```
+
+
+```{r}
+clean_data <- clean_data %>%
+  mutate(protein_names = str_extract(Protein.names, "^[^\\[]+")) %>%
+  select(-Protein.names)
+```
+Looking at all the values in the protein_names column
+```{r}
+clean_data %>%
+  distinct(protein_names)
+```
+# making the table longer by putting all locations into a column called "Localization"
+```{r}
+clean_data <- clean_data %>%
+  pivot_longer(
+    cols = Secreted:Membrane,  
+    names_to = "Localization",  
+    values_to = "Present"  # Temporary column to store TRUE/NA
+  ) %>%
+  filter(Present == TRUE) %>%  # Keep only rows where location is present
+  select(-Present)  # Drop the "Present" column
+```
+
+# let's look the number of values per column and delete any columns with less than 10 entries. 
+```{r}
+clean_data <- clean_data %>%
+  select(where(~ sum(!is.na(.)) >= 10))
+
+clean_data %>%
+  summarise_all(~ sum(!is.na(.)))
+```
+
+# Let's look at the function column
+```{r}
+clean_data %>%
+  group_by(Gene.Ontology..molecular.function.) %>%
+  summarise(n = n())
+```
+
+```{r}
+clean_data_2 <- clean_data %>%
+  mutate(Gene.Ontology..molecular.function. = str_split(Gene.Ontology..molecular.function., ";\\s*")) %>%  # Split by ";"
+  unnest(Gene.Ontology..molecular.function.) %>%  # Expand into separate rows
+  mutate(Gene.Ontology..molecular.function. = str_remove(Gene.Ontology..molecular.function., "\\[GO:\\d+\\]")) %>%  # Remove [GO:xxxxx]
+  rename(molecular_function_go = Gene.Ontology..molecular.function.) %>%  # Rename column
+  mutate(molecular_function_go = str_trim(molecular_function_go))  # Remove any extra spaces
+
+clean_data_2 %>%
+  select(molecular_function_go) %>%
+  group_by(molecular_function_go) %>%
+  summarise(n = n())
+```
+
+# repeating the same process with gene ontology biological process
+
+```{r}
+clean_data_3 <- clean_data_2 %>%
+  mutate(Gene.Ontology..biological.process. = str_split(Gene.Ontology..biological.process., ";\\s*")) %>%  # Split by ";"
+  unnest(Gene.Ontology..biological.process.) %>%  # Expand into separate rows
+  mutate(Gene.Ontology..biological.process. = str_remove(Gene.Ontology..biological.process., "\\[GO:\\d+\\]")) %>%  # Remove [GO:xxxxx]
+  rename(biological_process_go = Gene.Ontology..biological.process.) %>%  # Rename column
+  mutate(biological_process_go = str_trim(biological_process_go))  # Remove any extra spaces
+
+clean_data_3 %>%
+  select(biological_process_go) %>%
+  group_by(biological_process_go) %>%
+  summarise(n = n())
+```
+
+# Now let's look at the keywords column
+```{r}
+clean_data_4 <- clean_data_3 %>%
+  mutate(Keywords = str_split(Keywords, ";\\s*")) %>%  # Split by ";"
+  unnest(Keywords) %>%  # Expand into separate rows
+  mutate(Keywords = str_trim(Keywords))  # Remove any extra spaces
+
+clean_data_4 %>%
+  select(Keywords) %>%
+  group_by(Keywords) %>%
+  summarise(n = n())
+```
+
+$ looking at protein families
+```{r}
+raw_data_no_recep %>%
+  select(Protein.families) %>%
+  group_by(Protein.families) %>%
+  summarise(n = n())
+```
+# Now let's look at the function column:
+```{r}
+clean_data_4 <- clean_data_4 %>%
+  
+
+function_df <- raw_data_no_recep %>%
+  select(Function..CC.) %>%
+  group_by(Function..CC.) %>%
+  summarise(n = n())
+```
+
+Cleaning function column
+```{r}
+clean_data_5 <- clean_data_4 %>%
+  mutate(Function..CC. = str_remove(Function..CC., "^FUNCTION:\\s*")) %>%  # Remove "FUNCTION:"
+  mutate(Function..CC. = str_remove(Function..CC., "\\{ECO:.*?\\}")) %>%  # Remove "{ECO:...}"
+  mutate(Function..CC. = str_trim(Function..CC.)) %>%  # Remove leading/trailing spaces
+  rename(Function = Function..CC.) # Rename column for clarity
+
+clean_data_5 %>%
+  distinct(Function) 
+
+clean_data_5 <- clean_data_5 %>%
+  filter(Protein.families != "G-protein coupled receptor 1 family") %>%
+  filter(Length < 600) 
+```
+
+# Now let's get as many datasets as we can.
+
+Go terms (molecular function)
+```{r}
+grouped_go_molecular_function <- clean_data_5 %>%
+  select(Sequence, molecular_function_go) %>%
+  distinct() %>%
+  na.omit() %>%
+  group_by(molecular_function_go) %>%
+  count() %>%
+  filter(n > 49) %>%
+  rename("biological_concept" = molecular_function_go,
+         "sequence_count" = n)
+```
+
+
+
+Go terms (biological process)
+```{r}
+grouped_go_bio_process <- clean_data_5 %>%
+  select(Sequence, biological_process_go) %>%
+  distinct() %>%
+  na.omit() %>%
+  group_by(biological_process_go) %>%
+  count() %>%
+  filter(n > 49) %>%
+  rename("biological_concept" = biological_process_go,
+         "sequence_count" = n)
+```
+
+Protein family
+```{r}
+grouped_protein_family <- clean_data_5 %>%
+  select(Sequence, Protein.families) %>%
+  distinct() %>%
+  na.omit() %>%
+  group_by(Protein.families) %>%
+  count() %>%
+  filter(n > 49) %>%
+  rename("biological_concept" = Protein.families,
+         "sequence_count" = n)
+```
+
+Signal peptide present 
+```{r}
+count_signal_peptide <- clean_data_5 %>%
+  select(Sequence, Signal.peptide) %>%
+  distinct() %>%
+  mutate(signal = ifelse(!is.na(Signal.peptide), TRUE, FALSE)) %>%
+  group_by(signal) %>%
+  count() %>%
+  rename("signal_present" = signal,
+         "sequence_count" = n)
+  
+```
+
+Now grouping by keywords
+```{r}
+grouped_keywords <- clean_data_5 %>%
+  select(Sequence, Keywords) %>%
+  distinct() %>%
+  na.omit() %>%
+  group_by(Keywords) %>% 
+  count() %>%
+  filter(n > 49) %>%
+  rename("biological_concept" = Keywords,
+         "sequence_count" = n) %>%
+  filter(!biological_concept %in% c("Reference proteome", "Direct protein sequencing", "Repeat")) 
+  
+```
+
+Now, let's group by localization:
+```{r}
+grouped_localization <- clean_data_5 %>%
+  select(Sequence, Localization) %>%
+  distinct() %>%
+  na.omit() %>%
+  group_by(Localization) %>% 
+  count() %>%
+  #filter(n > 49) %>% 
+  rename("biological_concept" = Localization,
+         "sequence_count" = n)
+
+```
+
+
+Now let's make figures for each of these groups. (barplots)
+```{r}
+mol_func_plot <- grouped_go_molecular_function %>%
+  ggplot(aes(x = sequence_count, y = fct_reorder(biological_concept, sequence_count))) +
+  geom_col(fill = "maroon") +
+  scale_x_continuous(
+    name = "Number of sequences",
+    limits = c(0, 4000),
+    breaks = c(0, 1000, 2000, 3000, 4000),
+    expand = expansion(mult = c(0, 0.13)),
+  ) +
+  scale_y_discrete(
+    name = NULL,
+    expand = expansion(mult = c(0, 0))
+  ) +
+  labs(title = "GO Terms: Molecular Function") +
+  geom_text(aes(label = sequence_count),
+            hjust = -0.1,
+            vjust = 0.5) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0),
+        panel.grid.major.y = element_blank(),  
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_line(color = "grey70", size = 0.1),
+        panel.grid.major.x = element_line(color = "grey70", size = 0.1),
+        #axis.line.x.bottom = element_line(color = "grey70", size = 0.15)
+        ) 
+
+mol_func_plot
+ggsave(filename = "../../figures/mol_func_plot.png", plot = mol_func_plot, width = 9, height = 5)
+```
+```{r}
+bio_proc_plot <- grouped_go_bio_process %>%
+  ggplot(aes(x = sequence_count, y = fct_reorder(biological_concept, sequence_count))) +
+  geom_col(fill = "maroon") +
+  scale_x_continuous(
+    name = "Number of sequences",
+    limits = c(0, 12000),
+    breaks = c(0, 2000, 4000, 6000, 8000, 10000, 12000),
+    expand = expansion(mult = c(0, 0.13)),
+  ) +
+  scale_y_discrete(
+    name = NULL,
+    expand = expansion(mult = c(0, 0))
+  ) +
+  labs(title = "GO Terms: Biological Process") +
+  geom_text(aes(label = sequence_count),
+            hjust = -0.1,
+            vjust = 0.5) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0),
+        panel.grid.major.y = element_blank(),  
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_line(color = "grey70", size = 0.1),
+        panel.grid.major.x = element_line(color = "grey70", size = 0.1),
+        #axis.line.x.bottom = element_line(color = "grey70", size = 0.15)
+        ) 
+
+bio_proc_plot
+ggsave(filename = "../../figures/bio_proc_plot.png", plot = bio_proc_plot, width = 7, height = 8)
+```
+```{r}
+prot_fam_plot <- grouped_protein_family %>%
+  ggplot(aes(x = sequence_count, y = fct_reorder(biological_concept, sequence_count))) +
+  geom_col(fill = "maroon") +
+  scale_x_continuous(
+    name = "Number of sequences",
+    expand = expansion(mult = c(0, 0.13)),
+  ) +
+  scale_y_discrete(
+    name = NULL,
+    expand = expansion(mult = c(0, 0))
+  ) +
+  labs(title = "Protein Family") +
+  geom_text(aes(label = sequence_count),
+            hjust = -0.1,
+            vjust = 0.5) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0),
+        panel.grid.major.y = element_blank(),  
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_line(color = "grey70", size = 0.1),
+        panel.grid.major.x = element_line(color = "grey70", size = 0.1)
+        ) 
+
+prot_fam_plot
+ggsave(filename = "../../figures/prot_fam_plot.png", plot = prot_fam_plot, width = 7, height = 4)
+```
+
+```{r}
+keyword_plot <- grouped_keywords %>%
+  ggplot(aes(x = sequence_count, y = fct_reorder(biological_concept, sequence_count))) +
+  geom_col(fill = "maroon") +
+  scale_x_continuous(
+    name = "Number of sequences",
+    expand = expansion(mult = c(0, 0.13)),
+    limits = c(0, 12000),
+    breaks = c(0, 2000, 4000, 6000, 8000, 10000, 12000)
+  ) +
+  scale_y_discrete(
+    name = NULL,
+    expand = expansion(mult = c(0, 0))
+  ) +
+  labs(title = "Uniprot Keywords") +
+  geom_text(aes(label = sequence_count),
+            hjust = -0.1,
+            vjust = 0.5) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0),
+        panel.grid.major.y = element_blank(),  
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_line(color = "grey70", size = 0.1),
+        panel.grid.major.x = element_line(color = "grey70", size = 0.1)
+        ) 
+
+keyword_plot
+ggsave(filename = "../../figures/keyword_plot.png", plot = keyword_plot, width = 7, height = 4)
+```
+
+
+```{r}
+local_plot <- grouped_localization %>%
+  ggplot(aes(x = sequence_count, y = fct_reorder(biological_concept, sequence_count))) +
+  geom_col(fill = "maroon") +
+  scale_x_continuous(
+    name = "Number of sequences",
+    expand = expansion(mult = c(0, 0.13)),
+    limits = c(0, 12000),
+    breaks = c(0, 2000, 4000, 6000, 8000, 10000, 12000)
+  ) +
+  scale_y_discrete(
+    name = NULL,
+    expand = expansion(mult = c(0, 0))
+  ) +
+  labs(title = "Localization") +
+  geom_text(aes(label = sequence_count),
+            hjust = -0.1,
+            vjust = 0.5) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0),
+        panel.grid.major.y = element_blank(),  
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_line(color = "grey70", size = 0.1),
+        panel.grid.major.x = element_line(color = "grey70", size = 0.1)
+        ) 
+
+local_plot
+ggsave(filename = "../../figures/local_plot.png", plot = local_plot, width = 7, height = 4)
+```
+
+# Turning the clean_data_5 dataset into a fasta
+```{r}
+for_fasta <- clean_data_5 %>%
+  select(Entry, Sequence) %>%
+  distinct(Sequence, .keep_all = TRUE)
+
+# Create FASTA-formatted lines: ">ID" on one line, followed by the sequence on the next
+fasta_lines <- apply(for_fasta, 1, function(row) {
+  paste0(">", row["Entry"], "\n", row["Sequence"])
+})
+
+# Write these lines to a .fasta file
+writeLines(fasta_lines, con = "../../data/neuropeptide_sequences.fasta")
+```
+
+# let's look at the deeploc results and compare them to the Uniprot localization annotations.
+
+```{r}
+deeploc_data <- read.csv(file = "../../data/combined_deeploc_results.csv")
+
+```
+
+
+Now, let's do an inner join between clean_data_5 and the deeploc data:
+```{r}
+loc_df <- clean_data_5 %>%
+  select(Entry, Localization) %>%
+  distinct() %>%
+  rename("uniprot_localization" = Localization)
+
+loc_df %>%
+  group_by(uniprot_localization) %>%
+  count()
+```
+
+```{r}
+deeploc_df <- deeploc_data %>%
+  select(Protein_ID, Localizations) %>%
+  rename("Entry" = Protein_ID,
+         "deeploc_localization" = Localizations)
+
+deeploc_df %>%
+  group_by(deeploc_localization) %>%
+  count()
+
+```
+
+Now joining the datasets together:
+```{r}
+joined_loc <- inner_join(deeploc_df, loc_df)
+```
+
+First, I want to separate multiple localization values in the deeploc column
+```{r}
+joined_loc <- joined_loc %>%
+  separate_rows(deeploc_localization, sep = "\\|") %>%
+  mutate(deeploc_localization = str_trim(deeploc_localization))  # optional: remove surrounding whitespace
+
+joined_loc %>%
+  group_by(deeploc_localization) %>%
+  count()
+```
+Now I need to change some of the entries so that they match between the deeploc and uniprot data. 
+```{r}
+joined_loc_2 <- joined_loc %>%
+  mutate(uniprot_localization = ifelse(uniprot_localization == "Secreted", "Secreted/Extracellular", uniprot_localization)) %>%
+  mutate(deeploc_localization = ifelse(deeploc_localization == "Extracellular", "Secreted/Extracellular", deeploc_localization)) %>%
+  mutate(uniprot_localization = ifelse(uniprot_localization == "Membrane", "Cell membrane", uniprot_localization)) %>%
+  mutate(uniprot_localization = ifelse(uniprot_localization == "Rough endoplasmic reticulum", "Endoplasmic reticulum", uniprot_localization))
+
+joined_loc_2 %>%
+  filter(uniprot_localization != deeploc_localization) %>%
+  distinct(uniprot_localization, deeploc_localization)
+```
+
+Now let's plot a heatmap of the predicted and annotated localizations:
+```{r}
+for_heat_plot <- joined_loc_2 %>%
+  group_by(deeploc_localization, uniprot_localization) %>%
+  summarize(count = n(), .groups = "drop")
+
+for_heat_plot_2 <- for_heat_plot %>%
+  group_by(uniprot_localization) %>%
+  mutate(freq = count/sum(count))
+
+for_heat_plot_2 <- for_heat_plot_2 %>%
+  mutate(
+    deeploc_localization = factor(deeploc_localization),
+    uniprot_localization = factor(uniprot_localization))
+
+for_heat_plot_2 <- for_heat_plot_2 %>%
+  mutate(
+    deeploc_localization = fct_relevel(deeploc_localization, "Secreted/Extracellular", "Cell membrane", "Endoplasmic reticulum", "Nucleus"),
+    uniprot_localization = fct_relevel(uniprot_localization, "Secreted/Extracellular",  "Cell membrane", "Endoplasmic reticulum", "Nucleus")) 
+```
+
+```{r}
+# Get the levels in order (so we can reference the lower-left corner)
+x_levels <- levels(for_heat_plot_2$deeploc_localization)
+y_levels <- levels(for_heat_plot_2$uniprot_localization)
+
+# Pick the 4 lowest levels (leftmost and bottommost)
+x_rect <- x_levels[1:4]
+y_rect <- y_levels[1:4]
+
+
+heatmap_loc_plot <- for_heat_plot_2 %>%
+  ggplot(aes(x = deeploc_localization, y = uniprot_localization, fill = freq)) +
+  geom_tile(color = "white") +  
+  geom_text(aes(label = count), color = "white", size = 3) +
+  scale_x_discrete(
+    name = "DeepLoc localization prediction",
+    expand = expansion(add = c(0,0))
+  ) +
+  scale_y_discrete(
+    name = "Uniprot localization annotation",
+    expand = expansion(add = c(0,0))
+  ) +
+  scale_fill_gradient(
+    low = "#b2dfdb",   # for low counts
+    high = "#014d4e",   # for high counts (darkest)
+    name = "Frequency"
+  ) +
+  theme_cowplot() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background = element_rect(fill = "white", color = NA),
+    legend.position = "none"
+  ) +
+  annotate("rect",
+           xmin = 0.5, xmax = 4.5,   # first 4 x-levels
+           ymin = 0.5, ymax = 4.5,   # first 4 y-levels
+           fill = NA,                # no fill
+           color = "maroon",
+           size = 0.6) 
+
+heatmap_loc_plot
+
+ggsave(filename = "../../figures/local_heatmap_plot.png", plot = heatmap_loc_plot, width = 8, height = 6)
+```
+
+I want to see how many neuropeptides are less than 600 residues in length
+```{r}
+clean_data_5 %>%
+  select(Sequence) %>%
+  distinct() %>%
+  count()
+```
+I need to plot a histogram of peptide size length, so that I can then sample the non-neuropeptides to have the same size distribution.
+
+
+```{r}
+for_hist_plot <- clean_data_5 %>%
+  select(Sequence, Length) %>%
+  distinct()
+
+hist_plot <- for_hist_plot %>%
+  ggplot(aes(x = Length)) +
+  geom_histogram(
+    binwidth = 50,
+    center = 25,
+    color = "gray55",
+    fill = "cornsilk") +
+  scale_x_continuous(
+    expand = expansion(mult = c(0,0.01))
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0,0.1))
+  ) +
+  geom_text(
+    stat = "bin",
+    binwidth = 50,
+    center = 25,
+    aes(label = ..count..),
+    vjust = -0.5  # move text slightly above the bar
+  ) +
+  theme_cowplot()
+
+hist_plot
+```
+Now I need a file with the counts per bin:
+```{r}
+
+binned_counts <- for_hist_plot %>%
+  mutate(
+    bin = cut(
+      Length,
+      breaks = seq(0, 600, by = 50),  # start at 0 to align with center=25
+      include.lowest = TRUE,
+      include.highest = TRUE,
+      right = FALSE,  # [0,50), [50,100), etc.
+      labels = paste(seq(0, 550, by = 50), seq(49, 599, by = 50), sep = "-")
+    )
+  ) %>%
+  count(bin, name = "sequence_count")
+
+print(binned_counts)
+
+write_csv(binned_counts, "../../data/sequence_counts_per_bin.csv")
+```
+
+```{r}
+sum <- binned_counts %>%
+  mutate(sum = sum(sequence_count))
+
+sum
+```
+
+Lets get our first concept positive training group.
+The first group will be neuropeptide hormone activity (broad)
+
+```{r}
+neuropeptide_hormone_activity <- clean_data_5 %>%
+  select(Entry, Entry.Name, Sequence, Length, molecular_function_go) %>%
+  distinct() %>%
+  filter(molecular_function_go == "neuropeptide hormone activity")
+
+```
+
+Now I need to save these sequences as a fasta file. 
+
+
+```{r}
+# Create FASTA-formatted lines: ">ID" on one line, followed by the sequence on the next
+fasta_lines <- apply(neuropeptide_hormone_activity, 1, function(row) {
+  paste0(">", row["Entry"], "\n", row["Sequence"])
+})
+
+# Write these lines to a .fasta file
+writeLines(fasta_lines, con = "../../data/neuropeptide_hormone_activity_1.fasta")
+```
+
+Now we need to see the sequence length distribution of the neuropeptides in 
+order to match it when sampling the non-neuropeptide sequences.
+
+```{r}
+hist_plot_group1 <- neuropeptide_hormone_activity %>%
+  ggplot(aes(x = Length)) +
+  geom_histogram(
+    binwidth = 50,
+    center = 25,
+    color = "gray55",
+    fill = "cornsilk") +
+  scale_x_continuous(
+    expand = expansion(mult = c(0,0.01))
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0,0.1))
+  ) +
+  geom_text(
+    stat = "bin",
+    binwidth = 50,
+    center = 25,
+    aes(label = ..count..),
+    vjust = -0.5  # move text slightly above the bar
+  ) +
+  theme_cowplot()
+
+hist_plot_group1
+
+```
+```{r}
+binned_counts <- neuropeptide_hormone_activity %>%
+  mutate(
+    bin = cut(
+      Length,
+      breaks = seq(0, 600, by = 50),  # start at 0 to align with center=25
+      include.lowest = TRUE,
+      include.highest = TRUE,
+      right = FALSE,  # [0,50), [50,100), etc.
+      labels = paste(seq(0, 550, by = 50), seq(49, 599, by = 50), sep = "-")
+    )
+  ) %>%
+  count(bin, name = "sequence_count")
+
+print(binned_counts)
+
+write_csv(binned_counts, "../../data/sequence_counts_per_bin_group_1.csv")
+```
+
+
+# Let's look at how many sequences have the "peptide" annotated.
+
+```{r}
+peptides_ann <- clean_data_5 %>%
+  select(Entry, Sequence, Peptide) %>%
+  distinct() %>%
+  na.omit(Peptide)
+```
+
+
+Here is a list of all the peptide starts and ends. 
+```{r}
+peptides_ann_2 <- peptides_ann %>%
+  # extract all “123..456” substrings as a list-column
+  mutate(range_str = str_extract_all(Peptide, "\\d+\\.\\.\\d+")) %>%
+  # turn each element of that list into its own row
+  unnest_longer(range_str) %>%
+  # split “123..456” into two new columns
+  separate(range_str, into = c("peptide_start","peptide_end"), sep = "\\.\\.") %>%
+  # convert to integer
+  mutate(
+     start = as.integer(peptide_start),
+     end   = as.integer(peptide_end)) %>%
+  select(Entry, Sequence, peptide_start, peptide_end)
+
+```
+
+How much data is left after I filter out the starts at 1. 
+
+```{r}
+not_1_start <- peptides_ann_2 %>%
+  filter(peptide_start != 1)
+
+```
+
+get Signal sequence info:
+```{r}
+signal_info <- clean_data_5 %>%
+  select(Entry, Signal.peptide) %>%
+  distinct() %>%
+  mutate(range_str = str_extract_all(Signal.peptide, "\\d+\\.\\.\\d+")) %>%
+  unnest_longer(range_str) %>%
+  separate(range_str, into = c("signal_start","signal_end"), sep = "\\.\\.") %>%
+  mutate(
+     start = as.integer(signal_start),
+     end   = as.integer(signal_end)) %>%
+  select(Entry, signal_start, signal_end)
+```
+
+Joining the peptide and signal info dataframes together.
+
+```{r}
+peptide_data_full <- peptides_ann_2 %>%
+  left_join(signal_info)
+```
+
+```{r}
+right_after_signal <- peptide_data_full %>%
+  mutate(peptide_after_signal = ifelse(as.numeric(signal_end) + 1 == peptide_start, TRUE, FALSE))
+```  
+  
+Let's see how many peptides are NOT right after the signal"
+```{r}
+right_after_signal %>%
+  filter(peptide_after_signal == FALSE) %>%
+  count()
+
+```
+```{r}
+
+
+```
+
+
+
+
+

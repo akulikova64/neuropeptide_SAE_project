@@ -1,0 +1,403 @@
+---
+title: "logistic_reg_analysis.Rmd"
+output: html_document
+date: "2025-07-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cowplot)
+library(ggforce)
+library(ggridges)
+options(scipen = 999)
+library(colorspace)
+library(tidytext)    # for reorder_within() and scale_x_reordered()
+```
+
+
+#=========================================================================================
+# VALIDATION RESULTS
+#=========================================================================================
+
+```{r}
+log_reg_40 <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/log_regression_csv_results/linear_regression_results_40_hom_dup.csv")
+log_reg_50 <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/log_regression_csv_results/linear_regression_results_50_hom_dup.csv")
+log_reg_60 <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/log_regression_csv_results/linear_regression_results_60_hom_dup.csv")
+log_reg_70 <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/log_regression_csv_results/linear_regression_results_70_hom_dup.csv")
+log_reg_80 <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/log_regression_csv_results/linear_regression_results_80_hom_dup.csv")
+log_reg_90 <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/log_regression_csv_results/linear_regression_results_90_hom_dup.csv")
+```
+
+combining data into a single df
+```{r}
+
+combined <- bind_rows(
+  `40` = log_reg_40,
+  `50` = log_reg_50,
+  `60` = log_reg_60,
+  `70` = log_reg_70,
+  `80` = log_reg_80,
+  `90` = log_reg_90,
+  .id  = "perc_homology"
+) %>%
+  mutate(
+    # make sure perc_homology is numeric, not a string
+    perc_homology = as.numeric(perc_homology)
+  )
+```
+
+Now I want a line plot of validation accuracy across number of features. Each percent homology
+will be a line of a different color. 
+```{r}
+
+ggplot(combined, aes(x = num_features, y = validation, color = factor(perc_homology))) +
+  geom_line(size = 1) +
+  scale_color_manual(
+    name   = "training/validation\nset homology (%)",
+    values = qualitative_hcl(
+      n       = length(unique(combined$perc_homology)),
+      palette = "Set 2"
+    )
+  ) +
+  labs(
+    x = "Number of Features",
+    y = "Validation Accuracy (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+
+```
+Now, let's finish building out first test set (human neuropeptides) and then run this logistic regression on our test set and get the result as 
+single percent accuracy. 
+
+#=========================================================================================
+# TEST RESULTS
+#=========================================================================================
+
+Test set done. Let's plot the test results.
+
+```{r}
+log_reg_40_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_log_regression_csv_results/linear_regression_test_results_40_hom_dup.csv")
+log_reg_50_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_log_regression_csv_results/linear_regression_test_results_50_hom_dup.csv")
+log_reg_60_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_log_regression_csv_results/linear_regression_test_results_60_hom_dup.csv")
+log_reg_70_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_log_regression_csv_results/linear_regression_test_results_70_hom_dup.csv")
+log_reg_80_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_log_regression_csv_results/linear_regression_test_results_80_hom_dup.csv")
+log_reg_90_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_log_regression_csv_results/linear_regression_test_results_90_hom_dup.csv")
+
+```
+
+```{r}
+combined_test <- bind_rows(
+  `40` = log_reg_40_test,
+  `50` = log_reg_50_test,
+  `60` = log_reg_60_test,
+  `70` = log_reg_70_test,
+  `80` = log_reg_80_test,
+  `90` = log_reg_90_test,
+  .id  = "perc_homology"
+) %>%
+  mutate(
+    # make sure perc_homology is numeric, not a string
+    perc_homology = as.numeric(perc_homology)
+  )
+```
+
+```{r}
+ggplot(combined_test, aes(x = num_features, y = test_accuracy, color = factor(perc_homology))) +
+  geom_line(size = 0.8) +
+  scale_color_manual(
+    name   = "training/validation\nset homology (%)",
+    values = qualitative_hcl(
+      n       = length(unique(combined$perc_homology)),
+      palette = "Set 2"
+    )
+  ) +
+  labs(
+    x = "Number of Features",
+    y = "Test Accuracy (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+
+```
+
+# Logistic regression using folds from graphpart. Reminder there were 10 total folds at 50% identity. 
+# fold 9 was set asside as the test dataset
+# folds 0-8 were used in training and cross validation
+
+```{r}
+log_reg_folds <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/log_regression_csv_results/logistic_regression_results_folds_0-8_40.csv")
+```
+
+```{r}
+log_reg_folds_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_log_regression_csv_results/linear_regression_test_results_fold_9_40.csv")
+```
+
+```{r}
+val_data <- log_reg_folds %>%
+  rename(accuracy = validation) %>%
+  mutate(dataset = "validation")
+
+test_data <- log_reg_folds_test %>%
+  rename(accuracy = test_accuracy) %>%
+  mutate(dataset = "test")
+
+combined_val_test_folds <- bind_rows(val_data, test_data)
+
+```
+
+```{r}
+ggplot(
+  data = combined_val_test_folds,
+  aes(x = num_features, y = accuracy, color = dataset)
+  ) +
+  scale_color_manual(
+    name   = "dataset",
+    values = c("darkmagenta", "darkgreen")
+  ) +
+  geom_line(size = 0.8) +
+  labs(
+    x = "Number of Features",
+    y = "Validation Accuracy (%)"
+  ) +
+  theme_minimal()
+
+
+```
+Now let's plot the test results:
+
+
+
+```{r}
+ggplot(
+  data = log_reg_folds_test,
+  aes(x = num_features, y = test_accuracy)
+) +
+  geom_line(size = 0.8, color = "darkmagenta") +
+  labs(
+    x = "Number of Features",
+    y = "Validation Accuracy (%)"
+  ) +
+  theme_minimal()
+
+
+```
+
+
+Loading all the test results from the 40% nested k-fold cross validation
+```{r}
+# install.packages("tidyverse")  # if you don't already have it
+library(tidyverse)
+
+# 1) Point to the directory where your fold sub-folders live:
+base_dir <- "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_log_regression_csv_results/graphpart_40"
+
+# 2) Find all the CSV files (one per fold):
+files <- list.files(
+  path       = base_dir, 
+  pattern    = "^linear_regression_test_results_test_fold_\\d+\\.csv$", 
+  recursive  = TRUE,
+  full.names = TRUE
+)
+
+# 3) Read & combine, extracting the fold number from each filename:
+all_results <- files %>% 
+  set_names() %>% 
+  map_dfr(read_csv, .id = "file", show_col_types = FALSE) %>% 
+  mutate(
+    fold = str_extract(basename(file), "\\d+")
+  ) %>% 
+  select(fold, num_features, test_accuracy)
+```
+
+Ploting the graph:
+```{r}
+ggplot(all_results, aes(x = num_features, y = test_accuracy, color = factor(fold))) +
+  geom_line(size = 0.8) +
+  scale_color_manual(
+    name   = "Test fold",
+    values = qualitative_hcl(
+      n       = length(unique(all_results$fold)),
+      palette = "Set 2"
+    )
+  ) +
+  labs(
+    x = "Number of Features",
+    y = "Test Accuracy (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+
+```
+
+Getting df with the average test accuracy:
+```{r}
+avg_results <- all_results %>%
+  # if test_accuracy is character, first turn it numeric:
+  mutate(test_accuracy = as.numeric(test_accuracy)) %>%
+  group_by(num_features) %>%
+  summarise(
+    avg_test_accuracy = mean(test_accuracy, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+plotting the average test result:
+```{r}
+ggplot(
+  data = avg_results,
+  aes(x = num_features, y = avg_test_accuracy)
+  ) +
+  geom_line(size = 0.8, color = "darkmagenta") +
+  labs(
+    x = "Number of Features",
+    y = "Average Test Accuracy (%)"
+  ) +
+  theme_minimal()
+```
+Detecting the final number of features I need to use:
+(Elbow/knee method)
+```{r}
+# all_results should have: fold, num_features, test_accuracy
+# Make sure accuracy is numeric (not character):
+all_results <- all_results %>%
+  mutate(test_accuracy = as.numeric(test_accuracy))
+
+# 1) Summarise across folds → mean, sd, se per num_features
+avg_results <- all_results %>%
+  group_by(num_features) %>%
+  summarise(
+    avg_test_accuracy = mean(test_accuracy, na.rm = TRUE),
+    sd_acc            = sd(test_accuracy,   na.rm = TRUE),
+    n_folds           = dplyr::n(),
+    se_acc            = sd_acc / sqrt(n_folds),
+    .groups = "drop"
+  ) %>%
+  arrange(num_features)
+
+```
+
+```{r}
+# ---- Method A: Elbow/knee on slope ----
+slopes <- diff(avg_results$avg_test_accuracy) / diff(avg_results$num_features)
+threshold <- 0.001  # e.g., 0.1% gain per 10 features (adjust as you wish)
+
+idx <- which(slopes < threshold)
+opt_n_elbow <- if (length(idx)) {
+  # take the first time the marginal gain drops below threshold
+  avg_results$num_features[idx[1] + 0]
+} else {
+  # fallback: never dropped → pick the largest tested (or choose your own rule)
+  max(avg_results$num_features)
+}
+
+opt_n_elbow
+```
+# [1] 70  (in your previous run)
+
+```{r}
+# ---- Method B: 1-SE rule (pick simplest within 1 SE of best) ----
+best_row <- avg_results %>% slice_max(avg_test_accuracy, n = 1, with_ties = FALSE)
+best_acc <- best_row$avg_test_accuracy
+best_se  <- best_row$se_acc
+
+opt_n_1se <- avg_results %>%
+  filter(avg_test_accuracy >= best_acc - best_se) %>%
+  slice_min(num_features) %>%
+  pull(num_features)
+
+opt_n_1se
+```
+
+
+
+
+Loading validation results
+```{r}
+percent_identity <- 40
+base_dir <- file.path(
+  "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results",
+  "log_regression_csv_results",
+  paste0("graphpart_", percent_identity)
+)
+
+# 1) Locate all per‐fold validation CSVs
+files <- list.files(
+  path       = base_dir,
+  pattern    = "logistic_regression_results_excluded_fold_\\d+\\.csv$",
+  recursive  = TRUE,
+  full.names = TRUE
+)
+
+# 2) Read & combine
+all_val_results <- files %>%
+  set_names() %>% 
+  map_dfr(~ {
+    df <- read_csv(.x, show_col_types = FALSE)
+    fold_num <- str_extract(basename(.x), "\\d+") %>% as.integer()
+    df %>% mutate(fold = fold_num)
+  })
+
+```
+
+plotting the validation results:
+```{r}
+ggplot(all_val_results, aes(x = num_features, y = validation, color = factor(fold))) +
+  geom_line(size = 0.8) +
+  scale_color_manual(
+    name   = "Test fold",
+    values = qualitative_hcl(
+      n       = length(unique(all_results$fold)),
+      palette = "Set 2"
+    )
+  ) +
+  labs(
+    x = "Number of Features",
+    y = "Average Validation Accuracy (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

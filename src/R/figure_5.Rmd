@@ -1,0 +1,953 @@
+---
+title: "figure_5"
+output: html_document
+date: "2026-01-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+
+# master_entries <- read.csv(
+#   "../../data/final_human_secratome_entries_1201.csv",
+#   stringsAsFactors = FALSE
+# ) %>%
+#   select(Entry)
+
+master_entries <- read.csv(
+  "../../data/secretome_neuroflags_revised_final.csv",  #using the neuropeptide flags as the master entrires list
+  stringsAsFactors = FALSE
+) %>%
+  select(Entry)
+```
+
+
+```{r}
+# 2) Load neuropeptide flags (these are the revised ones from Thomas and Helena)
+
+secr_neuro_flags <- read.csv(
+  "../../data/secretome_neuroflags_revised_final.csv",
+  stringsAsFactors = FALSE
+) %>%
+  select(
+    Entry,
+    neuropeptide
+  )
+
+```
+
+
+```{r}
+library(tidyverse)
+
+our_model_preds <- read_csv(
+  "../../data/layer_18_secretome_1201_log_reg_320_predictions.csv"
+) %>%
+  mutate(
+    Entry = str_extract(Entry, "(?<=\\|)[^|]+(?=\\|)")
+  ) %>%
+  dplyr::rename(
+    our_model_prob = probability
+  )
+
+```
+
+
+```{r}
+library(dplyr)
+
+neuropredplm_preds <- read.csv(
+  "../../data/neuropredPLM_secretome_predictions.csv",
+  stringsAsFactors = FALSE
+) %>%
+  select(
+    Entry,
+    neuropredplm_class = predicted_class,
+    neuropredplm_max   = max_activation,
+    neuropredplm_mean  = mean_activation
+  )
+
+neuropredfrl_preds <- read.csv(
+  "../../data/neuropredFRL_secretome_predictions.csv",
+  stringsAsFactors = FALSE
+) %>%
+  select(
+    Entry,
+    neuropredfrl_score = prediction_score,
+    neuropredfrl_class = prediction
+  )
+
+secretome_all <- master_entries %>%
+  left_join(secr_neuro_flags,  by = "Entry") %>%
+  left_join(our_model_preds,   by = "Entry") %>%
+  left_join(neuropredplm_preds,by = "Entry") %>%
+  left_join(neuropredfrl_preds,by = "Entry")
+
+dim(secretome_all)
+
+```
+
+# cleaning up the data:
+```{r}
+secretome_all_2 <- secretome_all %>%
+  select(Entry, neuropeptide, our_model_prob, neuropredfrl_score, neuropredfrl_class, neuropredplm_class) %>%
+  mutate(neuropredplm_class = neuropredplm_class == 1) %>%
+  mutate(neuropredfrl_class = neuropredfrl_class == "Neuropeptide") %>%
+  mutate(our_model_class = our_model_prob >= 0.7)
+```
+
+Plotting out model (layer 18 InterPLM- 320 features log reg model)
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(forcats)
+
+# 1) Bin the probabilities into 10% buckets
+binned <- secretome_all_2 %>%
+  filter(!is.na(our_model_prob), !is.na(neuropeptide)) %>%
+  mutate(
+    prob_bin = cut(
+      our_model_prob,
+      breaks = seq(0, 1, by = 0.1),
+      include.lowest = TRUE,
+      right = TRUE,
+      labels = paste0(
+        seq(0, 90, 10), "%–", seq(10, 100, 10), "%"
+      )
+    )
+  ) %>%
+  group_by(prob_bin) %>%
+  summarise(
+    total = n(),
+    np_count = sum(neuropeptide == TRUE),
+    prop_np = ifelse(total > 0, np_count / total, 0),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    prob_bin = fct_explicit_na(prob_bin, na_level = "Unbinned")
+  )
+
+# 2) Plot: bar height = proportion neuropeptides; label "np/total" above bars
+ggplot(binned, aes(x = fct_rev(prob_bin), y = prop_np)) +
+  geom_col(
+    fill  = "lavender",
+    color = "grey40",
+    size  = 0.3
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0,0)),
+    labels = percent_format(accuracy = 1),
+    limits = c(0, 0.9)
+  ) +
+  labs(
+    x = "Predicted probability bin",
+    y = "Neuropeptide proportion"
+  ) +
+  theme_cowplot() +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1)
+  )
+
+```
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(forcats)
+
+binned_long <- secretome_all_2 %>%
+  filter(!is.na(our_model_prob), !is.na(neuropeptide)) %>%
+  mutate(
+    prob_bin = cut(
+      our_model_prob,
+      breaks = seq(0, 1, by = 0.1),
+      include.lowest = TRUE,
+      right = FALSE,  # makes bins [a, b)
+      labels = c(
+        sprintf("[%.1f-%.1f)", seq(0, 0.8, by = 0.1), seq(0.1, 0.9, by = 0.1)),
+        "[0.9-1.0]"    # last bin closed to include 1.0
+      )
+    ),
+    prob_bin = fct_rev(prob_bin),
+    neuropeptide = factor(
+      neuropeptide,
+      levels = c(TRUE, FALSE),
+      labels = c("Neuropeptide", "Non-neuropeptide")
+    )
+  ) %>%
+  count(prob_bin, neuropeptide)
+
+```
+
+
+```{r}
+
+label_df <- binned_long %>%
+  group_by(prob_bin) %>%
+  mutate(prop = n / sum(n)) %>%
+  filter(neuropeptide == "Neuropeptide") %>%
+  summarise(
+    prop_np = sum(prop),
+    .groups = "drop"
+  )
+
+
+plot_fig5 <- binned_long %>%
+mutate(
+    neuropeptide = factor(
+      neuropeptide,
+      levels = c("Neuropeptide", "Non-neuropeptide")
+    )
+  ) %>%
+ggplot(aes(x = fct_rev(prob_bin), y = n, fill = fct_relevel(neuropeptide, "Neuropeptide", "Non-neuropeptide"))) + 
+  geom_col(
+    position = position_fill(reverse = TRUE),
+    color = "grey40",
+    size = 0.3,
+    alpha = 0.85
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, 1, by = 0.2),
+    labels = percent_format(accuracy = 1),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  scale_x_discrete(
+    expand = expansion(mult = c(0, 0))
+  ) +
+  geom_text(
+  data = label_df,
+  aes(
+    x = prob_bin,
+    y = prop_np,
+    label = percent(prop_np, accuracy = 1)
+  ),
+  color = "white",
+  size = 4,
+  vjust = -0.5,
+  inherit.aes = FALSE
+  ) +
+  scale_fill_manual(
+    values = c( "Non-neuropeptide" = "#3d81c4",
+                "Neuropeptide" = "#ffb145"
+                )
+  ) +
+  labs(
+    x = "Predicted probability bin",
+    y = "Proportion of proteins",
+    fill = NULL
+  ) +
+  theme_cowplot() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "top",
+    legend.direction = "horizontal"
+  )
+
+plot_fig5
+```
+
+Ok, now I am making the count plot (will go under the plot above)
+
+```{r}
+plot_fig5_counts <- binned_long %>%
+  filter(neuropeptide == "Neuropeptide") %>%
+  ggplot(aes(x = fct_rev(prob_bin), y = n)) +
+  geom_col(
+    fill  = "#ffb145",
+    color = "grey40",
+    size  = 0.5,
+    alpha = 0.85
+  ) +
+  geom_text(
+    aes(label = n),
+    color = "black",
+    vjust = -0.5,
+    size = 4
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  scale_x_discrete(
+    expand = expansion(mult = c(0, 0.06))
+  ) +
+  labs(
+    x = "Predicted probability bin",
+    y = "Neuropeptide count"
+  ) +
+  theme_cowplot() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+plot_fig5_counts
+
+```
+
+Now let's make the cofusion matrices for the neuropred-frl and neuropred-plm models.
+
+NeuroPredPLM:
+```{r}
+
+colnames(secretome_all_2)
+```
+
+```{r}
+library(dplyr)
+
+conf_mat <- secretome_all_2 %>%
+  filter(!is.na(neuropeptide), !is.na(neuropredplm_class)) %>%
+  count(
+    truth = neuropeptide,
+    prediction = neuropredplm_class
+  )
+
+conf_mat
+```
+```{r}
+neuropredplm_plot <- conf_mat %>%
+  mutate(
+    truth = factor(
+      truth,
+      levels = c(TRUE, FALSE),
+      labels = c("Neuro.", "Non-neuro.")
+    ),
+    prediction = factor(
+      prediction,
+      levels = c(TRUE, FALSE),
+      labels = c("Neuro.", "Non-neuro.")
+    )
+  ) %>%
+  ggplot(aes(x = prediction, y = truth, fill = n)) +
+  geom_tile(color = "white") +
+  scale_x_discrete(expand = expansion(mult = c(0,0))) +
+  scale_y_discrete(expand = expansion(mult = c(0,0))) +
+  geom_text(
+    aes(
+      label = n,
+      color = n > max(n) * 0.6   # threshold for switching to white
+    ),
+    size = 5
+  ) +
+  scale_color_manual(
+    values = c(`TRUE` = "white", `FALSE` = "black"),
+    guide = "none"
+  ) +
+  scale_fill_gradient(low = "#f7fbff", high = "#014687") +
+  labs(
+    x = "Predicted label",
+    y = "True label",
+    fill = "Count"
+  ) +
+  theme_cowplot() +
+  theme(
+    axis.text.y = element_text(angle = 90, vjust = 0.5, hjust = 0.5)
+  )
+neuropredplm_plot
+```
+
+```{r}
+library(dplyr)
+
+conf_mat <- secretome_all_2 %>%
+  filter(!is.na(neuropeptide), !is.na(neuropredfrl_class)) %>%
+  count(
+    truth = neuropeptide,
+    prediction = neuropredfrl_class
+  )
+
+conf_mat
+```
+```{r}
+neuropredfrl_plot <- conf_mat %>%
+  mutate(
+    truth = factor(
+      truth,
+      levels = c(TRUE, FALSE),
+      labels = c("Neuro.", "Non-neuro.")
+    ),
+    prediction = factor(
+      prediction,
+      levels = c(TRUE, FALSE),
+      labels = c("Neuro.", "Non-neuro.")
+    )
+  ) %>%
+  ggplot(aes(x = prediction, y = truth, fill = n)) +
+  geom_tile(color = "white") +
+  scale_x_discrete(expand = expansion(mult = c(0,0))) +
+  scale_y_discrete(expand = expansion(mult = c(0,0))) +
+  geom_text(
+    aes(
+      label = n,
+      color = n > max(n) * 0.6   # threshold for switching to white
+    ),
+    size = 5
+  ) +
+  scale_color_manual(
+    values = c(`TRUE` = "white", `FALSE` = "black"),
+    guide = "none"
+  ) +
+  scale_fill_gradient(low = "#f7fbff", high = "#014687") +
+  labs(
+    x = "Predicted label",
+    y = "True label",
+    fill = "Count"
+  ) +
+  theme_cowplot() +
+  theme(
+    axis.text.y = element_text(angle = 90, vjust = 0.5, hjust = 0.5)
+  )
+neuropredfrl_plot
+```
+
+```{r}
+library(dplyr)
+
+conf_mat <- secretome_all_2 %>%
+  filter(!is.na(neuropeptide), !is.na(our_model_class)) %>%
+  count(
+    truth = neuropeptide,
+    prediction = our_model_class
+  )
+
+conf_mat
+```
+
+```{r}
+our_model_plot <- conf_mat %>%
+  mutate(
+    truth = factor(
+      truth,
+      levels = c(TRUE, FALSE),
+      labels = c("Neuro.", "Non-neuro.")
+    ),
+    prediction = factor(
+      prediction,
+      levels = c(TRUE, FALSE),
+      labels = c("Neuro.", "Non-neuro.")
+    )
+  ) %>%
+  ggplot(aes(x = prediction, y = truth, fill = n)) +
+  geom_tile(color = "white") +
+  scale_x_discrete(expand = expansion(mult = c(0,0))) +
+  scale_y_discrete(expand = expansion(mult = c(0,0))) +
+  geom_text(
+    aes(
+      label = n,
+      color = n > max(n) * 0.6   # threshold for switching to white
+    ),
+    size = 5
+  ) +
+  scale_color_manual(
+    values = c(`TRUE` = "white", `FALSE` = "black"),
+    guide = "none"
+  ) +
+  scale_fill_gradient(low = "#f7fbff", high = "#014687") +
+  labs(
+    x = "Predicted label",
+    y = "True label",
+    fill = "Count"
+  ) +
+  theme_cowplot() +
+  theme(
+    axis.text.y = element_text(angle = 90, vjust = 0.5, hjust = 0.5)
+  )
+our_model_plot
+```
+
+
+
+
+
+Calculating the statistics for each model:
+
+```{r}
+calc_classification_metrics <- function(df, truth_col, pred_col) {
+
+  df <- df %>%
+    dplyr::filter(
+      !is.na({{ truth_col }}),
+      !is.na({{ pred_col }})
+    )
+
+  TP <- sum(df[[deparse(substitute(truth_col))]] == TRUE  &
+            df[[deparse(substitute(pred_col))]]  == TRUE)
+
+  TN <- sum(df[[deparse(substitute(truth_col))]] == FALSE &
+            df[[deparse(substitute(pred_col))]]  == FALSE)
+
+  FP <- sum(df[[deparse(substitute(truth_col))]] == FALSE &
+            df[[deparse(substitute(pred_col))]]  == TRUE)
+
+  FN <- sum(df[[deparse(substitute(truth_col))]] == TRUE  &
+            df[[deparse(substitute(pred_col))]]  == FALSE)
+
+  tibble::tibble(
+    Accuracy  = (TP + TN) / (TP + TN + FP + FN),
+    Precision = TP / (TP + FP),
+    Recall    = TP / (TP + FN),
+    F1_score  = 2 * Precision * Recall / (Precision + Recall)
+  )
+}
+
+```
+
+```{r}
+library(dplyr)
+
+metrics_neuropredplm <- calc_classification_metrics(
+  secretome_all_2,
+  truth_col = neuropeptide,
+  pred_col  = neuropredplm_class
+)
+
+metrics_neuropredfrl <- calc_classification_metrics(
+  secretome_all_2,
+  truth_col = neuropeptide,
+  pred_col  = neuropredfrl_class
+)
+
+metrics_l18 <- calc_classification_metrics(
+  secretome_all_2,
+  truth_col = neuropeptide,
+  pred_col  = our_model_class
+)
+
+bind_rows(
+  NeuropredPLM        = metrics_neuropredplm,
+  NeuropredFRL        = metrics_neuropredfrl,
+  `L18 InterPLM LogReg` = metrics_l18,
+  .id = "Model"
+)
+```
+
+
+#-------------------- making a compound figure -----------------------------------
+
+```{r}
+#plot_fig5, plot_fig5_counts, our_model_plot, neuropredfrl_plot, neuropredplm_plot
+
+our_model_noleg <- our_model_plot + theme(legend.position = "none")
+neuropredfrl_noleg <- neuropredfrl_plot + theme(legend.position = "none")
+neuropredplm_noleg <- neuropredplm_plot + theme(legend.position = "none")
+
+
+```
+
+```{r}
+library(cowplot)
+
+confmat_legend <- get_legend(
+  our_model_plot +
+    theme(
+      legend.position = "right",
+      legend.title = element_text(size = 10),
+      legend.text  = element_text(size = 9)
+    )
+)
+
+```
+
+```{r}
+bottom_row <- plot_grid(
+  our_model_noleg,
+  neuropredfrl_noleg,
+  neuropredplm_noleg,
+  confmat_legend,
+  nrow = 1,
+  rel_widths = c(1, 1, 1, 0.35),
+  labels = c("c.", "d.", "e.", ""),
+  label_size = 14,
+  label_fontface = "bold",
+  label_x = 0.02,
+  label_y = 0.98,
+  hjust = 0,
+  vjust = 1
+)
+```
+
+```{r}
+top_row <- plot_grid(
+  plot_fig5,
+  plot_fig5_counts,
+  nrow = 1,
+  rel_widths = c(1, 1),
+  labels = c("a.", "b."),
+  label_size = 14,
+  label_fontface = "bold",
+  label_x = 0.02,
+  label_y = 0.98,
+  hjust = 0,
+  vjust = 1
+)
+```
+
+```{r}
+final_figure <- plot_grid(
+  top_row,
+  bottom_row,
+  ncol = 1,
+  rel_heights = c(1.2, 1)
+)
+
+final_figure
+```
+
+Saving the plot:
+```{r}
+ggsave(
+  filename = "../../figures/paper_figures/figure_5_predictions.png",
+  plot = final_figure,
+  width = 11,
+  height = 7,
+  dpi = 400
+)
+```
+
+
+#-------------------------------------------------------------------------------
+# SUPPLEMENTARY FIGURE
+#-------------------------------------------------------------------------------
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+
+x_thresh <- 0.5
+y_thresh <- 0.5
+
+plot_df <- secretome_all_2 %>%
+  filter(
+    !is.na(our_model_prob),
+    !is.na(neuropredfrl_score)
+  ) %>%
+  mutate(
+    type = if_else(neuropeptide, "Neuropeptide", "Non-neuropeptide")
+  )
+
+sup_cor_plot <- ggplot(plot_df, aes(x = our_model_prob, y = neuropredfrl_score)) +
+
+  # Non-neuropeptides (draw first)
+  geom_point(
+    data = filter(plot_df, type == "Non-neuropeptide"),
+    aes(fill = type),
+    color  = "#062c5e",
+    shape  = 21,
+    alpha  = 0.4,
+    size   = 2,
+    stroke = 0.5
+  ) +
+
+  # Neuropeptides (draw on top)
+  geom_point(
+    data = filter(plot_df, type == "Neuropeptide"),
+    aes(fill = type),
+    color  = "#ff5e00",
+    shape  = 21,
+    alpha  = 0.9,
+    size   = 2,
+    stroke = 0.5
+  ) +
+
+  # Quadrants
+  geom_vline(xintercept = x_thresh, linetype = "dashed", color = "grey40") +
+  geom_hline(yintercept = y_thresh, linetype = "dashed", color = "grey40") +
+
+  # Scales
+  scale_fill_manual(
+    name   = "",
+    values = c(
+      "Non-neuropeptide" = "#477aad",
+      "Neuropeptide"     = "#ffb145"
+    )
+  ) +
+  scale_x_continuous(
+    limits = c(0, 1),
+    expand = expansion(mult = c(0, 0.03))
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    expand = expansion(mult = c(0, 0.03))
+  ) +
+
+  labs(
+    x = "InterPLM LogReg prediction",
+    y = "Neuropred-FRL prediction"
+  ) +
+
+  theme_cowplot() +
+  theme(
+    legend.position = "top",
+    legend.direction = "horizontal"
+  )
+
+sup_cor_plot
+
+```
+```{r}
+df_cor <- secretome_all_2 %>%
+  dplyr::filter(
+    !is.na(our_model_prob),
+    !is.na(neuropredfrl_score)
+  )
+```
+
+```{r}
+pearson_cor <- cor.test(
+  df_cor$our_model_prob,
+  df_cor$neuropredfrl_score,
+  method = "pearson"
+)
+
+pearson_cor$estimate
+pearson_cor$p.value
+
+```
+
+```{r}
+ggsave(
+  filename = "../../figures/paper_figures/sup_fig_3_cor.png",
+  plot = sup_cor_plot,
+  width = 8,
+  height = 7,
+  dpi = 400
+)
+```
+
+
+#----------- I need to look at the top predictions (their annotations) ----------------------
+
+Adding the secretome annotations:
+
+Loading the secratome annotations:
+```{r}
+secratome_annotations <- read.delim(file = "../../data/secratome_annotations.tsv", sep="\t", na = c("", "NA", "#N/A"))
+```
+
+Let's clean the secratome annotations and then join the log reg predictions. 
+
+```{r}
+final_secratome_df <- secratome_annotations %>%
+  dplyr::select(
+    Entry,
+    Sequence,
+    Length,
+    Signal.peptide,
+    Peptide,
+    Protein.names,
+    Function..CC.,
+    Gene.Ontology..molecular.function.
+  ) %>%
+  dplyr::rename(
+    Signal_peptide   = Signal.peptide,
+    Protein_names    = Protein.names,
+    Protein_function = Function..CC.,
+    Go_function      = Gene.Ontology..molecular.function.
+  ) %>%
+  dplyr::select(
+    Entry,
+    Protein_names,
+    Protein_function,
+    Go_function,
+    Signal_peptide,
+    Peptide,
+    Sequence,
+    Length
+  )
+```
+
+
+```{r restrict-to-flagged-entries, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+final_with_preds <- final_secratome_df %>%
+  # Limit to only entries present in the flags file
+  inner_join(secr_neuro_flags, by = "Entry") %>%
+  # Add predictions for those entries
+  left_join(our_model_preds %>% select(Entry, our_model_prob), by = "Entry") %>%
+  select(Entry, our_model_prob, neuropeptide, Protein_names, everything())
+
+# Sanity checks
+final_with_preds %>%
+  summarise(
+    n_total = n(),
+    n_with_pred = sum(!is.na(our_model_prob)),
+    n_missing_pred = sum(is.na(our_model_prob))
+  )
+
+final_with_preds %>%
+  count(neuropeptide)
+
+```
+```{r}
+nrow(final_with_preds)
+```
+
+```{r top-15-by-prob, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+top15 <- final_with_preds %>%
+  filter(!is.na(our_model_prob)) %>%
+  arrange(desc(our_model_prob)) %>%
+  transmute(
+    Entry = Entry,
+    prediction = our_model_prob,
+    neuropeptide = neuropeptide,
+    Protein_names = Protein_names
+  ) %>%
+  slice_head(n = 20)
+
+top15 %>% print(n = 20)
+```
+Now, here are the worst ones (neuropeptides that recieved <0.9)
+
+```{r missed-neuropeptides-human, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+missed_neuropeptides <- final_with_preds %>%
+  filter(
+    neuropeptide == TRUE,
+    !is.na(our_model_prob),
+    our_model_prob < 0.9
+  ) %>%
+  arrange(our_model_prob) %>%  # lowest (worst) first
+  transmute(
+    Entry = Entry,
+    prediction = our_model_prob,
+    neuropeptide = neuropeptide,
+    Protein_names = Protein_names
+  )
+
+# How many were "missed" under this threshold?
+missed_neuropeptides %>%
+  summarise(n_missed = n())
+
+# Print the worst 20 (optional)
+missed_neuropeptides %>% slice_head(n = 30) %>% print(n = 30)
+
+# Or save/export if needed:
+# write_csv(missed_neuropeptides, "../../results/human_secretome_missed_neuropeptides_lt0p9.csv")
+```
+
+Here are the famouse neuropeptides:
+```{r}
+known_neuro <- final_with_preds %>%
+  filter(Entry %in% c("A6XGL2", "P01178", "P61278", "P01185", "P05019", "P01303")) %>%
+  select(Entry, our_model_prob, Protein_names)
+known_neuro
+```
+
+# Peptides that are NOT neuropeptides
+```{r}
+ high_pred_false <- final_with_preds %>%
+  filter(our_model_prob >= 0.9) %>%
+  filter(neuropeptide == FALSE)
+
+high_pred_false
+
+ low_pred_true <- final_with_preds %>%
+  filter(our_model_prob < 0.9) %>%
+  filter(neuropeptide == TRUE)
+ 
+ low_pred_true
+  
+ write.csv(
+  high_pred_false, "../../data/secretome_high_pred_false.csv",
+  row.names = FALSE
+)
+ 
+ write.csv(
+  low_pred_true, "../../data/secretome_low_pred_true.csv",
+  row.names = FALSE
+)
+```
+
+
+
+```{r boxplot-length-by-bin, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+bin_labels <- c(
+  sprintf("[%.1f-%.1f)", seq(0, 0.8, by = 0.1), seq(0.1, 0.9, by = 0.1)),
+  "[0.9-1.0]"  # include 1.0
+)
+
+final_with_preds %>%
+  filter(!is.na(our_model_prob), !is.na(Length)) %>%
+  mutate(
+    prob_bin = cut(
+      our_model_prob,
+      breaks = seq(0, 1, by = 0.1),
+      include.lowest = TRUE,
+      right = FALSE,
+      labels = bin_labels
+    ),
+    prob_bin = factor(prob_bin, levels = bin_labels)  # force correct order
+  ) %>%
+  ggplot(aes(x = prob_bin, y = Length)) +
+  geom_boxplot(outlier.alpha = 0.25) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = "Predicted probability bin",
+    y = "Peptide length (aa)",
+    title = "Peptide length distribution across predicted probability bins"
+  )
+
+```
+
+
+
+size distribution before clean-up:
+```{r boxplot-length-by-bin-precleanup, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+# Bin labels in ascending order
+bin_labels <- c(
+  sprintf("[%.1f-%.1f)", seq(0, 0.8, by = 0.1), seq(0.1, 0.9, by = 0.1)),
+  "[0.9-1.0]"  # include 1.0
+)
+
+# Pre-cleanup join: annotations + old predictions (no flag filtering)
+precleanup_with_preds <- final_secratome_df %>%
+  inner_join(
+    our_model_preds %>% select(Entry, our_model_prob),
+    by = "Entry"
+  )
+
+# Sanity check: should be ~1200 rows
+precleanup_with_preds %>% summarise(n = n())
+
+# Plot
+precleanup_with_preds %>%
+  filter(!is.na(our_model_prob), !is.na(Length)) %>%
+  mutate(
+    prob_bin = cut(
+      our_model_prob,
+      breaks = seq(0, 1, by = 0.1),
+      include.lowest = TRUE,
+      right = FALSE,
+      labels = bin_labels
+    ),
+    prob_bin = factor(prob_bin, levels = bin_labels)
+  ) %>%
+  ggplot(aes(x = prob_bin, y = Length)) +
+  geom_boxplot(outlier.alpha = 0.25) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    x = "Predicted probability bin",
+    y = "Peptide length (aa)",
+    title = "Pre-cleanup peptide length distribution across predicted probability bins"
+  )
+
+```
+```{r}
+nrow(precleanup_with_preds)
+```
+

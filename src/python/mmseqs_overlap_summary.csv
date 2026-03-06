@@ -1,0 +1,5 @@
+comparison,size_training,size_other,exact_matches,homolog_pairs,queries_with_hit,targets_with_hit
+Training neuropeptides vs UniProt neuropeptides,32492,10734,1563,800815,9165,5340
+Training neuropeptides vs Neuropeps & toxins,32492,1862,85,37671,6462,166
+Training neuropeptides vs Insulins,32492,7214,554,124442,1015,1467
+Training neuropeptides vs Filtered secretome,32492,15316,50,36090,14220,143

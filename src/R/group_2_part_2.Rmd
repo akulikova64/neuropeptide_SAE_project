@@ -1,0 +1,599 @@
+---
+title: "group_2_part_2"
+output: html_document
+date: "2025-05-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cowplot)
+library(ggforce)
+library(ggridges)
+library(glue)
+options(scipen = 999)
+library(colorspace)
+```
+
+This script re-labels the positive dataset to also include domain labels. Next, it looks at F1 scores produced by a hybrid model-
+where the precision is single residue-based and the recall is domain-based. 
+
+
+Note: go to "group_2_analysis.Rmd and find remake the right_after_signal df!!!!!!
+Then, continue with the following code:
+
+=========================== POSITIVE DATASET ===========================================================================
+
+Getting the final cleavage site df for creating labels (positive)
+```{r}
+final_cleavage_site_df <- right_after_signal %>%
+  filter(!(peptide_start == 1 & peptide_end == Length)) # filtering out mature peptides
+```
+
+Getting the positive data labels for the cleavage sites
+```{r}
+library(stringr)
+
+positive_labels <- final_cleavage_site_df %>%
+  # for each row, build a list of the 4 flanking positions
+  rowwise() %>%
+    mutate(
+      # build a tiny tibble of flank positions + their labels
+      flank = list(tibble::tibble(
+        residue_number = c(as.numeric(peptide_start) - 2,
+                           as.numeric(peptide_start) - 1,
+                           as.numeric(peptide_end)   + 1,
+                           as.numeric(peptide_end)   + 2),
+        cleavage       = c("cleavage_1",   
+                           "cleavage_1",
+                           "cleavage_2",
+                           "cleavage_2"),
+        cleavage_pos       = c("first\nouter",   
+                           "first\ninner",
+                           "second\ninner",
+                           "second\nouter")
+      ))
+    ) %>%
+    unnest(cols = c(flank)) %>% 
+    # drop any cleavage_1 when start == 1 or after_signal == TRUE
+    filter(!(cleavage == "cleavage_1" & (peptide_start == 1 | peptide_after_signal))) %>%
+    # drop any cleavage_2 when end == Length
+    filter(!(cleavage == "cleavage_2" & peptide_end == Length)) %>%
+    # also drop any positions that fall outside 1…Length
+    filter(residue_number >= 1, residue_number <= Length) %>%
+    # extract the amino acid at each flank position
+    mutate(residue = str_sub(Sequence, residue_number, residue_number))
+    
+positive_labels_2 <- positive_labels %>%
+  select(Entry, Sequence, Length, residue, residue_number) %>%
+  distinct()
+
+positive_labels_save <- positive_labels_2 %>%
+  select(Entry, residue, residue_number) %>%
+  ungroup() %>%
+  distinct()
+
+```
+
+
+```{r}
+positive_labels_domain <- positive_labels %>%
+  # define each window (domain) by Entry + cleavage site + flank type
+  # within the same sequence, same peptide (start and end) and cleavage site, this is a single domain
+  mutate(domain_string = paste(Entry, peptide_start, peptide_end, cleavage, sep = "_")) %>%
+  group_by(domain_string) %>%
+    # this gives each domain a unique integer
+    mutate(domain_id = cur_group_id()) %>%
+  ungroup() #%>%
+  #select(-domain_string)
+```
+
+saving the new positive labels (for hybrid model)
+```{r}
+positive_labels_save_domain <- positive_labels_domain %>%
+  select(Entry, residue, residue_number, domain_id) %>%
+  distinct()
+
+write_csv(positive_labels_save_domain, "../../data/concept_groups/sequences/group_2/training/group_2_positive_domain.csv")
+
+```
+
+====================================================================================================
+# ========================== Modified F1 scores computed in python. ================================
+====================================================================================================
+To compute F1 scores (using single residues/positions for the precision and domains for the recall), 
+run the following script in python: "get_training_F1_scores_modified.py"
+
+
+```{r}
+winning_F1_modified <- read.csv(file = "../../data/concept_groups/F1_scores/group_2/modified_F1/winning_thresholds.csv")
+# new modified: 
+# old unmodified: winning F1 is 0.67 (feature 4614)
+```
+
+Now let's look at the winning features for this modified method (per-residue precision and domain recall)
+
+#--------------------------- FEATURE 7986 -------------------------------------------------------------------
+```{r}
+feature <- 7986
+```
+
+Loading ALL activations for feature 7986 (won with F1 of 0.88)
+```{r}
+
+feature_df <- read.csv(file = glue("../../data/concept_groups/stats/group_2/activations_for_feature_{feature}.csv"))
+```
+
+Some additional F1 info about feature 7986:
+
+Threshold -> F1
+0.0 -> 0.882
+0.15 -> 0.624
+0.30 -> 0.112
+0.40 -> 0.011
+0.50 -> 0.0
+0.60 -> 0.0
+0.80 -> 0.0
+
+```{r}
+
+feature_df %>%
+  ggplot(aes(x = activation, fill = dataset, color = dataset)) +
+    # use ..count.. instead of the default ..density..
+    geom_density(alpha = 0.4, size = 0.2) +
+    scale_fill_manual(
+      values = c(
+        positive = "#66C2A5",  # teal
+        negative = "#FC8D62"   # orange
+    )) +
+    scale_x_continuous(expand = expansion(mult = c(0.0, 0.0))) +
+    scale_y_continuous(
+      #limits = c(0, 4000),
+      expand = expansion(mult = c(0, 0))) +
+    labs(
+      x = "Activation",
+      y = "Density",
+      title = glue("Feature {feature}")
+    ) +
+    theme_cowplot() +
+    theme(
+      legend.position = c(0.8, 0.8)
+    )
+```
+```{r}
+
+means <- feature_df %>%
+  group_by(dataset) %>%
+  summarise(mean_activation = mean(activation, na.rm=TRUE)) %>%
+  pull(mean_activation)
+
+feature_df %>%
+  ggplot(aes(x = dataset, y = activation, color = dataset, fill = dataset)) +
+    geom_violin(scale = "count", alpha = 0.3, show.legend = FALSE) +
+    #geom_sina(scale = "count", alpha = 0.6, size = 0.5, show.legend = FALSE) +
+    scale_y_continuous(
+      limits = c(0,1),
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      x     = "Dataset",
+      y     = "Activation",
+      title = glue("Feature {feature}")
+    ) +
+    stat_summary( 
+      fun   = mean,
+      geom  = "point",
+      shape = 23,
+      size  = 2,  # diamond at the mean 
+      color = "black",
+      fill  = "black"
+    ) +
+    stat_summary(
+      fun       = mean, 
+      geom      = "text",
+      aes(label = sprintf("%.2f", ..y..)),
+      vjust     = -1,
+      hjust     = 3,
+      size      = 4,
+      color     = "black"
+    ) +
+    geom_hline(yintercept = means, 
+               color = "gray50", 
+               linetype = "dashed",
+               size       = 0.5) +
+    theme_cowplot() +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      plot.title   = element_text(hjust = 0.5),
+      legend.position = "none"
+    )
+```
+What is the percent zeros in both datasets?
+```{r}
+feature_df %>%
+  group_by(dataset) %>%
+  summarise(
+    n               = n(),
+    non_zero        = sum(activation != 0),
+    percent_non_zero = non_zero / n * 100
+  )
+```
+
+For feature 7986, I want to see what the distribution of activations is for the first outer, first inner, second inner and second outer cleavage residues. 
+NOTE: get the cleavage_positions df from "group_2_analysis.Rmd"
+
+```{r}
+# joining this dataframe to the activations df
+joined_cleavage_positions <- left_join(cleavage_positions, feature_df)
+```
+Now let's plot the distribution of activations per cleavage site position:
+```{r, warning=FALSE}
+joined_cleavage_positions <- joined_cleavage_positions %>%
+  mutate(
+    cleavage_pos = fct_relevel(
+      cleavage_pos,
+      "first\nouter",
+      "first\ninner",
+      "second\ninner",
+      "second\nouter"
+    )
+  )
+
+joined_cleavage_positions %>%
+  ggplot(aes(x = cleavage_pos, y = activation, color = cleavage_pos, fill = cleavage_pos)) +
+    geom_violin(scale = "count", alpha = 0.3, show.legend = FALSE) +
+    geom_sina(scale = "count", alpha = 0.6, size = 0.5, show.legend = FALSE) +
+    scale_y_continuous(
+      limits = c(0,1),
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      x     = "Cleavage site",
+      y     = "Activation",
+      title = glue("Feature {feature}")
+    ) +
+    stat_summary( 
+      fun   = mean,
+      geom  = "point",
+      shape = 23,
+      size  = 2,  # diamond at the mean 
+      color = "black",
+      fill  = "black"
+    ) +
+    stat_summary(
+      fun       = mean, 
+      geom      = "text",
+      aes(label = sprintf("%.2f", ..y..)),
+      vjust     = -0.5,
+      hjust     = 2,
+      size      = 4,
+      color     = "black"
+    ) +
+    theme_cowplot() +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      plot.title   = element_text(hjust = 0.5),
+      legend.position = "none"
+    )
+```
+
+#--------------------------- FEATURE 260 -------------------------------------------------------------------
+
+```{r}
+feature <- 260
+```
+
+```{r}
+
+feature_df <- read.csv(file = glue("../../data/concept_groups/stats/group_2/activations_for_feature_{feature}.csv"))
+```
+
+```{r}
+
+feature_df %>%
+  ggplot(aes(x = activation, fill = dataset, color = dataset)) +
+    # use ..count.. instead of the default ..density..
+    geom_density(alpha = 0.4, size = 0.2) +
+    scale_fill_manual(
+      values = c(
+        positive = "#66C2A5",  # teal
+        negative = "#FC8D62"   # orange
+    )) +
+    scale_x_continuous(expand = expansion(mult = c(0.0, 0.0))) +
+    scale_y_continuous(
+      #limits = c(0, 4000),
+      expand = expansion(mult = c(0, 0))) +
+    labs(
+      x = "Activation",
+      y = "Density",
+      title = glue("Feature {feature}")
+    ) +
+    theme_cowplot() +
+    theme(
+      legend.position = c(0.8, 0.8)
+    )
+```
+```{r}
+
+means <- feature_df %>%
+  group_by(dataset) %>%
+  summarise(mean_activation = mean(activation, na.rm=TRUE)) %>%
+  pull(mean_activation)
+
+feature_df %>%
+  ggplot(aes(x = dataset, y = activation, color = dataset, fill = dataset)) +
+    geom_violin(scale = "count", alpha = 0.3, show.legend = FALSE) +
+    #geom_sina(scale = "count", alpha = 0.6, size = 0.5, show.legend = FALSE) +
+    scale_y_continuous(
+      limits = c(0,1),
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      x     = "Dataset",
+      y     = "Activation",
+      title = glue("Feature {feature}")
+    ) +
+    stat_summary( 
+      fun   = mean,
+      geom  = "point",
+      shape = 23,
+      size  = 2,  # diamond at the mean 
+      color = "black",
+      fill  = "black"
+    ) +
+    stat_summary(
+      fun       = mean, 
+      geom      = "text",
+      aes(label = sprintf("%.2f", ..y..)),
+      vjust     = -1,
+      hjust     = 3,
+      size      = 4,
+      color     = "black"
+    ) +
+    geom_hline(yintercept = means, 
+               color = "gray50", 
+               linetype = "dashed",
+               size       = 0.5) +
+    theme_cowplot() +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      plot.title   = element_text(hjust = 0.5),
+      legend.position = "none"
+    )
+```
+What is the percent zeros in both datasets?
+```{r}
+feature_df %>%
+  group_by(dataset) %>%
+  summarise(
+    n               = n(),
+    non_zero        = sum(activation != 0),
+    percent_non_zero = non_zero / n * 100
+  )
+```
+
+For feature 260, I want to see what the distribution of activations is for the first outer, first inner, second inner and second outer cleavage residues. 
+NOTE: get the cleavage_positions df from "group_2_analysis.Rmd"
+
+```{r}
+# joining this dataframe to the activations df
+joined_cleavage_positions <- left_join(cleavage_positions, feature_df)
+```
+Now let's plot the distribution of activations per cleavage site position:
+```{r, warning=FALSE}
+joined_cleavage_positions <- joined_cleavage_positions %>%
+  mutate(
+    cleavage_pos = fct_relevel(
+      cleavage_pos,
+      "first\nouter",
+      "first\ninner",
+      "second\ninner",
+      "second\nouter"
+    )
+  )
+
+joined_cleavage_positions %>%
+  ggplot(aes(x = cleavage_pos, y = activation, color = cleavage_pos, fill = cleavage_pos)) +
+    geom_violin(scale = "count", alpha = 0.3, show.legend = FALSE) +
+    geom_sina(scale = "count", alpha = 0.6, size = 0.5, show.legend = FALSE) +
+    scale_y_continuous(
+      limits = c(0,1),
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      x     = "Cleavage site",
+      y     = "Activation",
+      title = glue("Feature {feature}")
+    ) +
+    stat_summary( 
+      fun   = mean,
+      geom  = "point",
+      shape = 23,
+      size  = 2,  # diamond at the mean 
+      color = "black",
+      fill  = "black"
+    ) +
+    stat_summary(
+      fun       = mean, 
+      geom      = "text",
+      aes(label = sprintf("%.2f", ..y..)),
+      vjust     = -0.5,
+      hjust     = 2,
+      size      = 4,
+      color     = "black"
+    ) +
+    theme_cowplot() +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      plot.title   = element_text(hjust = 0.5),
+      legend.position = "none"
+    )
+```
+#--------------------------- FEATURE 9365 -------------------------------------------------------------------
+
+```{r}
+feature <- 9365
+```
+
+```{r}
+
+feature_df <- read.csv(file = glue("../../data/concept_groups/stats/group_2/activations_for_feature_{feature}.csv"))
+```
+
+```{r}
+
+feature_df %>%
+  ggplot(aes(x = activation, fill = dataset, color = dataset)) +
+    # use ..count.. instead of the default ..density..
+    geom_density(alpha = 0.4, size = 0.2) +
+    scale_fill_manual(
+      values = c(
+        positive = "#66C2A5",  # teal
+        negative = "#FC8D62"   # orange
+    )) +
+    scale_x_continuous(expand = expansion(mult = c(0.0, 0.0))) +
+    scale_y_continuous(
+      #limits = c(0, 4000),
+      expand = expansion(mult = c(0, 0))) +
+    labs(
+      x = "Activation",
+      y = "Density",
+      title = glue("Feature {feature}")
+    ) +
+    theme_cowplot() +
+    theme(
+      legend.position = c(0.8, 0.8)
+    )
+```
+```{r}
+
+means <- feature_df %>%
+  group_by(dataset) %>%
+  summarise(mean_activation = mean(activation, na.rm=TRUE)) %>%
+  pull(mean_activation)
+
+feature_df %>%
+  ggplot(aes(x = dataset, y = activation, color = dataset, fill = dataset)) +
+    geom_violin(scale = "count", alpha = 0.3, show.legend = FALSE) +
+    #geom_sina(scale = "count", alpha = 0.6, size = 0.5, show.legend = FALSE) +
+    scale_y_continuous(
+      limits = c(0,1),
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      x     = "Dataset",
+      y     = "Activation",
+      title = glue("Feature {feature}")
+    ) +
+    stat_summary( 
+      fun   = mean,
+      geom  = "point",
+      shape = 23,
+      size  = 2,  # diamond at the mean 
+      color = "black",
+      fill  = "black"
+    ) +
+    stat_summary(
+      fun       = mean, 
+      geom      = "text",
+      aes(label = sprintf("%.2f", ..y..)),
+      vjust     = -1,
+      hjust     = 3,
+      size      = 4,
+      color     = "black"
+    ) +
+    geom_hline(yintercept = means, 
+               color = "gray50", 
+               linetype = "dashed",
+               size       = 0.5) +
+    theme_cowplot() +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      plot.title   = element_text(hjust = 0.5),
+      legend.position = "none"
+    )
+```
+What is the percent zeros in both datasets?
+```{r}
+feature_df %>%
+  group_by(dataset) %>%
+  summarise(
+    n               = n(),
+    non_zero        = sum(activation != 0),
+    percent_non_zero = non_zero / n * 100
+  )
+```
+
+For feature 7986, I want to see what the distribution of activations is for the first outer, first inner, second inner and second outer cleavage residues. 
+NOTE: get the cleavage_positions df from "group_2_analysis.Rmd"
+
+```{r}
+# joining this dataframe to the activations df
+joined_cleavage_positions <- left_join(cleavage_positions, feature_df)
+```
+Now let's plot the distribution of activations per cleavage site position:
+```{r, warning=FALSE}
+joined_cleavage_positions <- joined_cleavage_positions %>%
+  mutate(
+    cleavage_pos = fct_relevel(
+      cleavage_pos,
+      "first\nouter",
+      "first\ninner",
+      "second\ninner",
+      "second\nouter"
+    )
+  )
+
+joined_cleavage_positions %>%
+  ggplot(aes(x = cleavage_pos, y = activation, color = cleavage_pos, fill = cleavage_pos)) +
+    geom_violin(scale = "count", alpha = 0.3, show.legend = FALSE) +
+    geom_sina(scale = "count", alpha = 0.6, size = 0.5, show.legend = FALSE) +
+    scale_y_continuous(
+      limits = c(0,1),
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      x     = "Cleavage site",
+      y     = "Activation",
+      title = glue("Feature {feature}")
+    ) +
+    stat_summary( 
+      fun   = mean,
+      geom  = "point",
+      shape = 23,
+      size  = 2,  # diamond at the mean 
+      color = "black",
+      fill  = "black"
+    ) +
+    stat_summary(
+      fun       = mean, 
+      geom      = "text",
+      aes(label = sprintf("%.2f", ..y..)),
+      vjust     = -0.5,
+      hjust     = 2,
+      size      = 4,
+      color     = "black"
+    ) +
+    theme_cowplot() +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      plot.title   = element_text(hjust = 0.5),
+      legend.position = "none"
+    )
+```
+
+
+
+
+
+
+
+
+
+

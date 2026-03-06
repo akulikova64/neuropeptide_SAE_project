@@ -1,0 +1,291 @@
+---
+title: "crf_analysis.Rmd"
+output: html_document
+date: "2025-07-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cowplot)
+library(ggforce)
+library(ggridges)
+options(scipen = 999)
+library(colorspace)
+library(tidytext)    # for reorder_within() and scale_x_reordered()
+```
+
+
+#=========================================================================================
+# VALIDATION RESULTS
+#=========================================================================================
+
+Quick peak at the crf validation results for the 40% hom group:
+```{r}
+crf_40 <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/crf_csv_results/crf_results_40_hom_dup.csv")
+crf_50 <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/crf_csv_results/crf_results_50_hom_dup.csv")
+crf_60 <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/crf_csv_results/crf_results_60_hom_dup.csv")
+crf_70 <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/crf_csv_results/crf_results_70_hom_dup.csv")
+crf_80 <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/crf_csv_results/crf_results_80_hom_dup.csv")
+crf_90 <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/crf_csv_results/crf_results_90_hom_dup.csv")
+
+```
+
+combining data into a single df
+```{r}
+
+combined <- bind_rows(
+  `40` = crf_40,
+  `50` = crf_50,
+  `60` = crf_60,
+  `70` = crf_70,
+  `80` = crf_80,
+  `90` = crf_90,
+  .id  = "perc_homology"
+) %>%
+  mutate(
+    # make sure perc_homology is numeric, not a string
+    perc_homology = as.numeric(perc_homology)
+  )
+```
+
+Now I want a line plot of validation accuracy across number of features. Each percent homology
+will be a line of a different color. 
+```{r}
+
+ggplot(combined, aes(x = num_features, y = validation, color = factor(perc_homology))) +
+  geom_line(size = 1) +
+  scale_color_manual(
+    name   = "training/validation\nset homology (%)",
+    values = qualitative_hcl(
+      n       = length(unique(combined$perc_homology)),
+      palette = "Set 2"
+    )
+  ) +
+  labs(
+    x = "Number of Features",
+    y = "Validation Accuracy (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+
+```
+#=========================================================================================
+# TEST RESULTS
+#=========================================================================================
+
+Test set done. Let's plot the test results.
+
+```{r}
+crf_40_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_crf_results/crf_test_results_40_hom.csv")
+crf_50_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_crf_results/crf_test_results_50_hom.csv")
+crf_60_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_crf_results/crf_test_results_60_hom.csv")
+crf_70_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_crf_results/crf_test_results_70_hom.csv")
+crf_80_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_crf_results/crf_test_results_80_hom.csv")
+crf_90_test <- read.csv("/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/test_crf_results/crf_test_results_90_hom.csv")
+
+```
+
+```{r}
+combined_test <- bind_rows(
+  `40` = crf_40_test,
+  `50` = crf_50_test,
+  `60` = crf_60_test,
+  `70` = crf_70_test,
+  `80` = crf_80_test,
+  `90` = crf_90_test,
+  .id  = "perc_homology"
+) %>%
+  mutate(
+    # make sure perc_homology is numeric, not a string
+    perc_homology = as.numeric(perc_homology)
+  )
+```
+
+```{r}
+ggplot(combined_test, aes(x = num_features, y = balanced_accuracy, color = factor(perc_homology))) +
+  geom_line(size = 0.8) +
+  scale_color_manual(
+    name   = "training/validation\nset homology (%)",
+    values = qualitative_hcl(
+      n       = length(unique(combined$perc_homology)),
+      palette = "Set 2"
+    )
+  ) +
+  scale_x_continuous(limits = c(0, 200)) +
+  labs(
+    x = "Number of Features",
+    y = "Test Accuracy (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+
+```
+
+Loading validation results
+```{r}
+percent_identity <- 40
+base_dir <- file.path(
+  "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results",
+  "crf_csv_results",
+  paste0("graphpart_", percent_identity)
+)
+
+# 1) Locate all per‐fold validation CSVs
+files <- list.files(
+  path       = base_dir,
+  pattern    = "crf_results_excluded_fold_\\d+\\.csv$",
+  recursive  = TRUE,
+  full.names = TRUE
+)
+
+# 2) Read & combine
+all_val_results <- files %>%
+  set_names() %>% 
+  map_dfr(~ {
+    df <- read_csv(.x, show_col_types = FALSE)
+    fold_num <- str_extract(basename(.x), "\\d+") %>% as.integer()
+    df %>% mutate(fold = fold_num)
+  })
+
+```
+
+plotting the validation results:
+```{r}
+ggplot(all_val_results, aes(x = num_features, y = validation, color = factor(fold))) +
+  geom_line(size = 0.8) +
+  scale_color_manual(
+    name   = "Test fold",
+    values = qualitative_hcl(
+      n       = length(unique(all_results$fold)),
+      palette = "Set 2"
+    )
+  ) +
+  labs(
+    x = "Number of Features",
+    y = "Average Validation Accuracy (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+```
+
+
+
+Loading all the test results from the 40% nested k-fold cross validation
+```{r}
+library(tidyverse)
+
+# 1) Point to the directory where your fold sub-folders live:
+base_dir <- "/Volumes/T7 Shield/toxin_dataset/toxins_and_neuro/classifier_results/crf_csv_results/graphpart_40"
+
+# 2) Find all the CSV files (one per fold):
+files <- list.files(
+  path       = base_dir, 
+  pattern    = "^crf_test_results_fold_\\d+\\.csv$", 
+  recursive  = TRUE,
+  full.names = TRUE
+)
+
+# 3) Read & combine, extracting the fold number from each filename:
+all_results <- files %>% 
+  set_names() %>% 
+  map_dfr(read_csv, .id = "file", show_col_types = FALSE) %>% 
+  mutate(
+    fold = str_extract(basename(file), "\\d+")
+  ) %>% 
+  select(fold, num_features, test_accuracy)
+```
+
+Ploting the graph:
+```{r}
+ggplot(all_results, aes(x = num_features, y = test_accuracy, color = factor(fold))) +
+  geom_line(size = 0.8) +
+  scale_color_manual(
+    name   = "Test fold",
+    values = qualitative_hcl(
+      n       = length(unique(all_results$fold)),
+      palette = "Set 2"
+    )
+  ) +
+  labs(
+    x = "Number of Features",
+    y = "Test Accuracy (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+
+```
+
+Getting df with the average test accuracy:
+```{r}
+avg_results <- all_results %>%
+  # if test_accuracy is character, first turn it numeric:
+  mutate(test_accuracy = as.numeric(test_accuracy)) %>%
+  group_by(num_features) %>%
+  summarise(
+    avg_test_accuracy = mean(test_accuracy, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+plotting the average test result:
+```{r}
+ggplot(
+  data = avg_results,
+  aes(x = num_features, y = avg_test_accuracy)
+  ) +
+  geom_line(size = 0.8, color = "darkmagenta") +
+  labs(
+    x = "Number of Features",
+    y = "Average Test Accuracy (%)"
+  ) +
+  theme_minimal()
+```
+
+Detecting the final number of features I need to use:
+(Elbow/knee method)
+
+```{r}
+avg_results <- avg_results %>% arrange(num_features)
+slopes   <- diff(avg_results$avg_test_accuracy) / diff(avg_results$num_features)
+threshold <- 0.001  # e.g. 0.1% gain per 10 features
+elbow_idx <- which(slopes < threshold)[1] + 0
+opt_n     <- avg_results$num_features[elbow_idx]
+opt_n
+
+```
+Let's just use 175 features. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,551 @@
+---
+title: "Figure_6"
+output: html_document
+date: "2026-02-12"
+---
+```{r}
+library(tidyverse)
+library(cowplot)
+library(ggridges)
+```
+
+LogReg l18 320 feature model prediction results:
+```{r}
+mouse_pred <- read.csv("../../data/fig_6_mouse_secretome/layer_18_secretome_mouse_log_reg_320_predictions.csv")
+
+worm_pred <- read.csv("../../data/fig_6_c_elegans_secretome/layer_18_secretome_c_elegans_log_reg_320_predictions.csv")
+
+fly_pred <- read.csv("../../data/fig_6_drosophila_secretome/layer_18_secretome_drosophila_log_reg_320_predictions.csv")
+
+zebra_fish_pred <- read.csv("../../data/fig_6_zebrafish_secretome/layer_18_secretome_zebrafish_log_reg_320_predictions_fixed.csv")
+```
+
+Neuropeptide flag files:
+```{r}
+mouse_flags <- read.csv("../../data/fig_6_mouse_secretome/secratome_neuropeptide_flags.csv")
+
+worm_flags <- read.csv("../../data/fig_6_c_elegans_secretome/secratome_neuropeptide_flags.csv")
+
+fly_flags <- read.csv("../../data/fig_6_drosophila_secretome/secratome_neuropeptide_flags.csv")
+
+fish_flags <- read.csv("../../data/fig_6_zebrafish_secretome/secratome_neuropeptide_flags.csv")
+```
+
+Loading in the annotations:
+
+```{r}
+library(dplyr)
+
+mouse_ann <- read.csv("../../data/fig_6_mouse_secretome/secratome_annotations_mouse_clean.csv")
+
+worm_ann  <- read.csv("../../data/fig_6_c_elegans_secretome/secratome_annotations_c_elegans_clean.csv")
+
+fly_ann   <- read.csv("../../data/fig_6_drosophila_secretome/secratome_annotations_drosophila_clean.csv")
+
+fish_ann   <- read.csv("../../data/fig_6_zebrafish_secretome/secratome_annotations_zebrafish_clean.csv")
+```
+
+
+Defining a function for cleaning my annotations
+```{r}
+clean_secretome_annotations <- function(secratome_annotations) {
+  
+  secratome_annotations %>%
+    dplyr::select(
+      Entry,
+      Sequence,
+      Length,
+      Signal.peptide,
+      Peptide,
+      Protein.names,
+      Function..CC.,
+      Gene.Ontology..molecular.function.
+    ) %>%
+    dplyr::rename(
+      Signal_peptide   = Signal.peptide,
+      Protein_names    = Protein.names,
+      Protein_function = Function..CC.,
+      Go_function      = Gene.Ontology..molecular.function.
+    ) %>%
+    dplyr::select(
+      Entry,
+      Protein_names,
+      Protein_function,
+      Go_function,
+      Signal_peptide,
+      Peptide,
+      Sequence,
+      Length
+    )
+}
+
+```
+
+Applying my function to all three secretomes:
+```{r}
+mouse_clean <- clean_secretome_annotations(mouse_ann)
+worm_clean  <- clean_secretome_annotations(worm_ann)
+fly_clean   <- clean_secretome_annotations(fly_ann)
+fish_clean   <- clean_secretome_annotations(fish_ann)
+
+```
+
+FINAL MOUSE DF:
+```{r}
+mouse_final <- mouse_clean %>%
+  inner_join(mouse_pred, by = "Entry") %>%   # keep only predicted peptides
+  left_join(mouse_flags, by = "Entry") %>%   # add neuropeptide column 
+  select(Entry, probability, neuropeptide, everything())
+
+```
+
+FINAL C.ELEGANS DF:
+```{r}
+worm_final <- worm_clean %>%
+  inner_join(worm_pred, by = "Entry") %>%
+  left_join(worm_flags, by = "Entry") %>%
+  select(Entry, probability, neuropeptide, everything())
+
+```
+
+FINAL DROSOPHILA DF:
+```{r}
+fly_final <- fly_clean %>%
+  inner_join(fly_pred, by = "Entry") %>%
+  left_join(fly_flags, by = "Entry") %>%
+  select(Entry, probability, neuropeptide, everything())
+
+```
+
+FINAL ZEBRA_FISH DF:
+```{r}
+fish_final <- fish_clean %>%
+  inner_join(zebra_fish_pred, by = "Entry") %>%
+  left_join(fish_flags, by = "Entry") %>%
+  select(Entry, probability, neuropeptide, everything())
+
+```
+
+Helper function for counting bins and plotting:
+```{r}
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(scales)
+library(cowplot)
+
+make_binned_plot <- function(df, prob_col = "highest_prob") {
+  
+  df_prepared <- df %>%
+    mutate(
+      neuropeptide = ifelse(neuropeptide == TRUE,
+                            "Neuropeptide",
+                            "Non-neuropeptide"),
+      prob_bin = cut(
+        .data[[prob_col]],
+        breaks = seq(0, 1, by = 0.1),
+        include.lowest = TRUE
+      )
+    )
+  
+  binned_long <- df_prepared %>%
+    count(prob_bin, neuropeptide)
+  
+  label_df <- binned_long %>%
+    group_by(prob_bin) %>%
+    mutate(prop = n / sum(n)) %>%
+    filter(neuropeptide == "Neuropeptide") %>%
+    summarise(
+      prop_np = sum(prop),
+      .groups = "drop"
+    )
+  
+  plot <- binned_long %>%
+    mutate(
+      neuropeptide = factor(
+        neuropeptide,
+        levels = c("Neuropeptide", "Non-neuropeptide")
+      )
+    ) %>%
+    ggplot(aes(x = fct_rev(prob_bin), y = n,
+               fill = fct_relevel(neuropeptide,
+                                  "Neuropeptide",
+                                  "Non-neuropeptide"))) +
+    geom_col(
+      position = position_fill(reverse = TRUE),
+      color = "grey40",
+      size = 0.3,
+      alpha = 0.85
+    ) +
+    scale_y_continuous(
+      breaks = seq(0, 1, by = 0.2),
+      labels = percent_format(accuracy = 1),
+      expand = expansion(mult = c(0, 0))
+    ) +
+    scale_x_discrete(
+      expand = expansion(mult = c(0, 0))
+    ) +
+    geom_text(
+      data = label_df,
+      aes(
+        x = prob_bin,
+        y = prop_np,
+        label = percent(prop_np, accuracy = 1)
+      ),
+      color = "white",
+      size = 4,
+      vjust = -0.5,
+      inherit.aes = FALSE
+    ) +
+    scale_fill_manual(
+      values = c(
+        "Non-neuropeptide" = "#3d81c4",
+        "Neuropeptide" = "#ffb145"
+      )
+    ) +
+    labs(
+      x = "Predicted probability bin",
+      y = "Proportion of proteins",
+      fill = NULL
+    ) +
+    theme_cowplot() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "top",
+      legend.direction = "horizontal"
+    )
+  
+  return(plot)
+}
+
+```
+
+
+Generating plots for each species:
+```{r}
+plot_mouse <- make_binned_plot(mouse_final, prob_col = "probability")
+plot_worm  <- make_binned_plot(worm_final, prob_col = "probability")
+plot_fly   <- make_binned_plot(fly_final, prob_col = "probability")
+plot_fish   <- make_binned_plot(fish_final, prob_col = "probability")
+
+plot_mouse
+plot_worm
+plot_fly
+plot_fish
+
+```
+Combining three dataset:
+```{r}
+library(dplyr)
+library(ggplot2)
+library(forcats)
+
+mouse_final$species <- "M.\u00A0musculus"
+worm_final$species  <- "C.\u00A0elegans"
+fly_final$species   <- "D.\u00A0melanogaster"
+fish_final$species   <- "D.\u00A0rerio"
+
+combined_df <- bind_rows(
+  mouse_final,
+  worm_final,
+  fly_final,
+  fish_final
+) %>%
+  mutate(
+    neuropeptide = ifelse(neuropeptide == TRUE,
+                          "Neuropeptide",
+                          "Non-neuropeptide"),
+    neuropeptide = factor(
+      neuropeptide,
+      levels = c("Non-neuropeptide", "Neuropeptide")),
+    species = factor(species,
+                     levels = c("D.\u00A0rerio", "D.\u00A0melanogaster", "C.\u00A0elegans", "M.\u00A0musculus"))
+
+  )
+
+```
+
+
+```{r}
+library(ggplot2)
+library(ggridges)
+library(scales)
+library(cowplot)
+
+plot_density <- ggplot(
+  combined_df,
+  aes(
+    x = probability,
+    y = species,
+    fill = neuropeptide
+  )
+) +
+  geom_density_ridges(
+    alpha = 0.7,
+    scale = 0.9,
+    rel_min_height = 0.01,
+    color = "grey40",
+    size = 0.3
+  ) +
+  geom_vline(
+  xintercept = 0.7,
+  color = "#7a0019",   # dark maroon
+  linewidth = 0.75,
+  linetype = "dashed"
+ ) +
+  scale_x_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, by = 0.1),
+    labels = number_format(accuracy = 0.1),
+    expand = expansion(mult = c(0,0.01))
+  ) +
+  scale_y_discrete( 
+    expand = expansion(mult = c(0,0))
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Non-neuropeptide" = "#64a1de",
+      "Neuropeptide" = "#fca226"
+    )
+  ) +
+  labs(
+    x = "Predicted probability",
+    y = NULL,
+    fill = NULL
+  ) +
+  theme_cowplot() +
+  theme(
+    legend.position = "top",
+    axis.text.y = element_text(
+      angle = 90,
+      hjust = 0,     # anchor at tick
+      vjust = 0.6,   # center vertically
+      size = 14,
+      face = "italic"
+    ),
+    panel.grid.major.x = element_line(color = "grey85"),
+    panel.grid.major.y = element_line(color = "grey85"),
+    panel.grid.minor = element_blank()
+  )
+
+plot_density
+
+```
+
+Worst neuropeptide predictions for mouse secretome
+```{r}
+mouse_final %>%
+  filter(neuropeptide == TRUE) %>%
+  arrange(probability) %>%
+  transmute(
+    Entry = Entry,
+    probability = probability,
+    neuropeptide = neuropeptide,
+    Protein_names = Protein_names
+  ) %>%
+  slice_head(n = 15)
+```
+
+Worst neuropeptide predictions for zebrafish secretome
+```{r}
+fish_final %>%
+  filter(neuropeptide == FALSE) %>%
+  arrange(desc(probability)) %>%
+  transmute(
+    Entry = Entry,
+    probability = probability,
+    neuropeptide = neuropeptide,
+    Protein_names = Protein_names
+  ) %>%
+  slice_head(n = 15)
+```
+
+# Getting 8 files for the outliers for each species:
+```{r}
+worm_final_filtered <- worm_final %>%
+  filter(neuropeptide == FALSE, probability >= 0.7) %>%
+  arrange(desc(probability)) %>%
+  select(Entry, probability, neuropeptide, Protein_names, everything())
+```
+
+```{r}
+write.csv(
+  worm_final_filtered,
+  file = "../../data/outliers/worm_prob>=0.7_FALSE.csv",
+  row.names = FALSE
+)
+```
+
+
+
+
+Now, let's make confusion matrices for each plot.
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(cowplot)
+
+make_confusion_plot <- function(df, species_name, threshold = 0.7) {
+  
+  df_eval <- df %>%
+    mutate(
+      actual = ifelse(neuropeptide == TRUE,
+                      "Neuro.",
+                      "Non-neuro."),
+      predicted = ifelse(probability >= threshold,
+                         "Neuro.",
+                         "Non-neuro.")
+    )
+  
+  conf_mat <- df_eval %>%
+    count(actual, predicted)
+  
+  total_n <- nrow(df_eval)
+  
+  ggplot(conf_mat, aes(x = predicted, y = actual, fill = n)) +
+    geom_tile(color = "white") +
+    geom_text(
+      aes(label = n),
+      size = 5,
+      fontface = "bold",
+      color = ifelse(conf_mat$n > max(conf_mat$n) * 0.6, "white", "black")
+    ) +
+    scale_fill_gradient(low = "white", high = "#752132") +
+    labs(
+      subtitle = paste0("N = ", total_n),
+      x = "Predicted label",
+      y = "True label"
+    ) +
+    scale_y_discrete(expand = expansion(mult = c(0,0))) +
+    scale_x_discrete(expand = expansion(mult = c(0,0))) +
+    theme_cowplot(14) +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      axis.text.y = element_text(angle = 90, vjust = 0.5, hjust = 0.5),
+      legend.position = "none",
+      plot.subtitle = element_text(
+        hjust = 0.5,        # center horizontally
+        size = 17,          # control font size
+        face = "bold"       # optional
+      )
+    )
+}
+
+
+
+```
+
+Generating the plots for each of the 3 secretomes
+```{r}
+plot_mouse_cm <- make_confusion_plot(mouse_final, "M. musculus")
+plot_worm_cm  <- make_confusion_plot(worm_final, "C. elegans")
+plot_fly_cm   <- make_confusion_plot(fly_final, "D. melanogaster")
+plot_fish_cm   <- make_confusion_plot(fish_final, "D. rerio")
+
+plot_mouse_cm
+plot_worm_cm
+plot_fly_cm
+plot_fish_cm
+
+```
+
+Stacking confusion plots:
+```{r}
+confusion_stack <- plot_grid(
+  plot_mouse_cm,
+  plot_worm_cm,
+  plot_fly_cm,
+  plot_fish_cm,
+  labels = c("b.", "c.", "d.", "e."),
+  ncol = 1,
+  align = "v"
+)
+```
+
+combining with density plot:
+```{r}
+compound_plot <- plot_grid(
+  plot_density,
+  confusion_stack,
+  labels = c("a.", ""),
+  ncol = 2,
+  rel_widths = c(2, 1)
+)
+
+compound_plot
+
+```
+
+Saving the plot:
+```{r}
+ggsave(
+  filename = "../../figures/paper_figures/figure_6_other_secretomes.png",
+  plot = compound_plot,
+  width = 9,
+  height = 9.4,
+  dpi = 400
+)
+```
+
+
+Now, we need to calculate the statistics:
+```{r}
+compute_metrics <- function(df, threshold = 0.7) {
+  
+  df_eval <- df %>%
+    mutate(
+      actual = ifelse(neuropeptide == TRUE, 1, 0),
+      predicted = ifelse(probability >= threshold, 1, 0)
+    )
+  
+  TP <- sum(df_eval$actual == 1 & df_eval$predicted == 1)
+  TN <- sum(df_eval$actual == 0 & df_eval$predicted == 0)
+  FP <- sum(df_eval$actual == 0 & df_eval$predicted == 1)
+  FN <- sum(df_eval$actual == 1 & df_eval$predicted == 0)
+  
+  accuracy  <- (TP + TN) / (TP + TN + FP + FN)
+  precision <- ifelse((TP + FP) == 0, NA, TP / (TP + FP))
+  recall    <- ifelse((TP + FN) == 0, NA, TP / (TP + FN))
+  f1        <- ifelse(is.na(precision) | is.na(recall) | (precision + recall) == 0,
+                      NA,
+                      2 * precision * recall / (precision + recall))
+  
+  tibble(
+    TP = TP,
+    TN = TN,
+    FP = FP,
+    FN = FN,
+    Accuracy = accuracy,
+    Precision = precision,
+    Recall = recall,
+    F1 = f1
+  )
+}
+
+```
+
+```{r}
+mouse_metrics <- compute_metrics(mouse_final, threshold = 0.7)
+worm_metrics  <- compute_metrics(worm_final, threshold = 0.7)
+fly_metrics   <- compute_metrics(fly_final, threshold = 0.7)
+fish_metrics   <- compute_metrics(fish_final, threshold = 0.7)
+```
+
+
+Putting it all into a table:
+```{r}
+metrics_table <- bind_rows(
+  mouse_metrics %>% mutate(Species = "M. musculus"),
+  worm_metrics  %>% mutate(Species = "C. elegans"),
+  fly_metrics   %>% mutate(Species = "D. melanogaster"),
+  fish_metrics   %>% mutate(Species = "D. rerio")
+) %>%
+  select(Species, Accuracy, Precision, Recall, F1, TP, FP, FN, TN)
+
+metrics_table
+
+```
+
+
+

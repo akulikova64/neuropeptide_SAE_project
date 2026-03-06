@@ -1,0 +1,1078 @@
+---
+title: "group_2_analysis"
+output: html_document
+date: "2025-05-03"
+---
+# Group 2 is cleavage sites (per-residue annotation)
+
+
+# Let's look at how many sequences have the "peptide" annotated.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cowplot)
+library(ggforce)
+library(ggridges)
+options(scipen = 999)
+library(colorspace)
+```
+
+Note: get "clean_data_5" in clean_KW-0527.Rmd
+```{r}
+peptides_ann <- clean_data_5 %>%
+  select(Entry, Sequence, Length, Peptide) %>%
+  distinct() %>%
+  na.omit(Peptide)
+```
+
+
+Here is a list of all the peptide starts and ends. 
+```{r}
+peptides_ann_2 <- peptides_ann %>%
+  # extract all “123..456” substrings as a list-column
+  mutate(range_str = str_extract_all(Peptide, "\\d+\\.\\.\\d+")) %>%
+  # turn each element of that list into its own row
+  unnest_longer(range_str) %>%
+  # split “123..456” into two new columns
+  separate(range_str, into = c("peptide_start","peptide_end"), sep = "\\.\\.") %>%
+  # convert to integer
+  mutate(
+     start = as.integer(peptide_start),
+     end   = as.integer(peptide_end)) %>%
+  select(Entry, Sequence, Length, peptide_start, peptide_end)
+
+```
+
+How much data is left after I filter out the starts at 1. 
+
+```{r}
+not_1_start <- peptides_ann_2 %>%
+  filter(peptide_start != 1) # 1297 unique peptides (with alternative starts)
+
+```
+
+get Signal sequence info: (where signal starts and ends so that later we can remove cleavage site right after signal)
+```{r}
+signal_info <- clean_data_5 %>%
+  select(Entry, Signal.peptide) %>%
+  distinct() %>%
+  mutate(range_str = str_extract_all(Signal.peptide, "\\d+\\.\\.\\d+")) %>%
+  unnest_longer(range_str) %>%
+  separate(range_str, into = c("signal_start","signal_end"), sep = "\\.\\.") %>%
+  mutate(
+     start = as.integer(signal_start),
+     end   = as.integer(signal_end)) %>%
+  select(Entry, signal_start, signal_end)
+```
+
+Joining the peptide and signal info dataframes together.
+
+```{r}
+peptide_data_full <- peptides_ann_2 %>%
+  left_join(signal_info)
+```
+
+```{r}
+right_after_signal <- peptide_data_full %>%
+  mutate(peptide_after_signal = ifelse(as.numeric(signal_end) + 1 == peptide_start, TRUE, FALSE))
+```  
+  
+Let's see how many peptides are NOT right after the signal:
+```{r}
+right_after_signal %>%
+  filter(peptide_after_signal == FALSE) %>%
+  count()
+
+```
+Now let's see the sequences where the start is 1 and the end is equal to the length. These are the mature peptide and we do not want these in the dataset.
+```{r}
+mature_peptides <- right_after_signal %>%
+  filter(peptide_start == 1 & peptide_end == Length) # result: 938 mature peptide sequences
+```
+
+Now, let's look at the sequences where the start is 1, but the end is not equal to the length (these we want to keep because we can use the second cleavage site residues)
+```{r}
+semi_mature_peptides <- right_after_signal %>%
+  filter(peptide_start == 1) %>%
+  filter(peptide_end != Length) # result: only 9 of these 
+```
+
+
+I now want to save the unique sequences as a fasta file. 
+```{r}
+for_fasta_1 <- right_after_signal %>%
+  filter(!(peptide_start == 1 & peptide_end == Length)) %>% # filtering out mature peptides
+  select(Entry, Sequence) %>%
+  distinct(Entry, Sequence, .keep_all = TRUE)
+
+# Create FASTA-formatted lines: ">ID" on one line, followed by the sequence on the next
+fasta_lines <- apply(for_fasta_1, 1, function(row) {
+  paste0(">", row["Entry"], "\n", row["Sequence"])
+})
+
+#Write these lines to a .fasta file
+writeLines(fasta_lines, con = "../../data/cleavage_site_sequences.fasta")
+```
+
+I believe that there is a duplicated sequence under different "Entry" names. I want to see it.
+```{r}
+# Step 1: find the “Sequence” values that are duplicated
+dup_seqs <- right_after_signal %>%
+  select(Entry, Sequence) %>%
+  distinct()
+```
+  
+  
+
+=========================== POSITIVE DATASET ===========================================================================
+
+Getting the final cleavage site df for creating labels (positive)
+```{r}
+final_cleavage_site_df <- right_after_signal %>%
+  filter(!(peptide_start == 1 & peptide_end == Length)) # filtering out mature peptides
+```
+
+Getting the positive data labels for the cleavage sites
+```{r}
+library(stringr)
+
+positive_labels <- final_cleavage_site_df %>%
+  # for each row, build a list of the 4 flanking positions
+  rowwise() %>%
+    mutate(
+      # build a tiny tibble of flank positions + their labels
+      flank = list(tibble::tibble(
+        residue_number = c(as.numeric(peptide_start) - 2,
+                           as.numeric(peptide_start) - 1,
+                           as.numeric(peptide_end)   + 1,
+                           as.numeric(peptide_end)   + 2),
+        cleavage       = c("cleavage_1",   
+                           "cleavage_1",
+                           "cleavage_2",
+                           "cleavage_2"),
+        cleavage_pos       = c("first\nouter",   
+                           "first\ninner",
+                           "second\ninner",
+                           "second\nouter")
+      ))
+    ) %>%
+    unnest(cols = c(flank)) %>% 
+    # drop any cleavage_1 when start == 1 or after_signal == TRUE
+    filter(!(cleavage == "cleavage_1" & (peptide_start == 1 | peptide_after_signal))) %>%
+    # drop any cleavage_2 when end == Length
+    filter(!(cleavage == "cleavage_2" & peptide_end == Length)) %>%
+    # also drop any positions that fall outside 1…Length
+    filter(residue_number >= 1, residue_number <= Length) %>%
+    # extract the amino acid at each flank position
+    mutate(residue = str_sub(Sequence, residue_number, residue_number))
+    
+positive_labels_2 <- positive_labels %>%
+  select(Entry, Sequence, Length, residue, residue_number) %>%
+  distinct()
+
+positive_labels_save <- positive_labels_2 %>%
+  select(Entry, residue, residue_number) %>%
+  ungroup() %>%
+  distinct()
+
+#write_csv(positive_labels_save, "../../data/concept_groups/sequences/group_2/training/group_2_positive.csv")
+
+```
+
+Let's save the cleavage site sequence again. Since we did a lot of new filtering, we may have dropped some Entries.
+```{r}
+
+for_fasta <- positive_labels_save %>%
+  select(Entry) %>%
+  distinct() %>%
+  inner_join(for_fasta_1) %>%
+  filter(!Entry %in% c("P0C171", "P0C172", "B2ZB96")
+  )
+
+# Create FASTA-formatted lines: ">ID" on one line, followed by the sequence on the next
+fasta_lines <- apply(for_fasta, 1, function(row) {
+  paste0(">", row["Entry"], "\n", row["Sequence"])
+})
+
+# Write these lines to a .fasta file
+writeLines(fasta_lines, con = "../../data/cleavage_site_sequences.fasta")
+```
+
+==================== NEGATIVE DATASET ================================================
+Now we need to sample the negative dataset:
+First we make a table that contains everything we want to exclude. 
+Besides the cleavage sites, I also want to exclude the adjacent neighbors to the cleavage sites (just in case). 
+```{r}
+pos_labels_with_neighbors <- positive_labels_2 %>%
+  select(Entry, residue_number) %>%
+  # add the -1 and +1 neighbors
+  mutate(
+    neighbor_minus = residue_number - 1,
+    neighbor_plus  = residue_number + 1
+  ) %>%
+  pivot_longer(
+    cols      = c(residue_number, neighbor_minus, neighbor_plus),
+    values_to = "residue_number"
+  ) %>%
+  filter(residue_number >= 1) %>%       # drop any <1
+  select(Entry, residue_number) %>%
+  distinct()
+```
+
+Now, we need to count how many cleavage site resides (positives) we have per sequence/Entry. 
+Remember that some sequences have multiple alternative cleavage sites.
+```{r}
+positives_count <- positive_labels_2 %>%
+  count(Entry, name = "n_pos")
+```
+
+
+Each sequence is expanded to have one row per residue (will be used later)
+I kept the sequence row as is to later extract the actual residue
+```{r}
+expanded_seqs <- positive_labels_2 %>%
+  select(Entry, Sequence, Length) %>%
+  distinct() %>%
+  uncount(Length) %>%                   # replicate each row 'Length' times
+  group_by(Entry) %>%
+  mutate(residue_number = row_number()) %>%
+  ungroup() 
+```
+
+Next, we need to remove the excluded positions
+```{r}
+expanded_seqs <- expanded_seqs %>%
+  anti_join(pos_labels_with_neighbors, by = c("Entry", "residue_number"))
+```
+
+Here we sample the negative dataset positions. (Try not to rerun this) each time it will resample
+```{r}
+negative_labels <- expanded_seqs %>%
+  left_join(positives_count, by = "Entry") %>% # adding the count of positive dataset residues per Entry/sequence
+  group_by(Entry) %>%
+  sample_n(size = unique(n_pos)) %>%    # sample same number as positives
+  ungroup() %>%
+  mutate(
+    residue = str_sub(Sequence, residue_number, residue_number) # str_sub(string, start, end)
+  ) %>%
+  select(Entry, residue, residue_number)
+```
+
+Saving the sampled negative data 
+```{r}
+#write_csv(negative_labels, "../../data/concept_groups/sequences/group_2/training/group_2_negative.csv")
+
+```
+
+Making sure the sampling worked and we have equal number of positives. 
+```{r}
+# How many positives per Entry?
+pos_counts <- positive_labels_save %>%
+  count(Entry, name = "n_pos")
+
+# How many negatives did I actually get per Entry?
+neg_counts <- negative_labels %>%
+  count(Entry, name = "n_neg")
+
+# Join and look for any Entry where n_neg < n_pos
+mismatches <- pos_counts %>%
+  left_join(neg_counts, by = "Entry") %>%
+  mutate(less_neg = ifelse(n_neg < n_pos, TRUE, FALSE))
+
+mismatches          # see which ones and by how much
+```
+
+====================================================================================================
+# ========================== Unmodified F1 scores computed. ========================================
+====================================================================================================
+To compute F1 scores (using single residues/positions), run the following script in python:
+"get_training_F1_scores_per_residue.py"
+
+Let's look at the winning thresholds and F1 scores.
+```{r}
+winning_F1_unmodified <- read.csv(file = "../../data/concept_groups/F1_scores/group_2/winning_thresholds.csv")
+# winning F1 is 0.67 (feature 4614)
+```
+
+Let's look at the length distribution of the peptides
+```{r, warning=FALSE, message=FALSE}
+length_dist_plot <- positive_labels_2 %>%
+  select(Entry, Length) %>%
+  distinct() %>%
+  ggplot(aes(x = Length)) +
+    geom_histogram(
+      binwidth = 20,
+      center = 10,
+      fill     = "steelblue",
+      color    = "white"
+    ) +
+    scale_x_continuous(
+      breaks = seq(0, 600, 40),  # ticks every 20
+      limits = c(0, 600),
+      expand = expansion(mult = c(0,0.02))
+    ) +
+    scale_y_continuous(
+      limits = c(0, 55),
+      expand = expansion(mult = c(0,0))
+    ) +
+    geom_text(
+      stat     = "bin",
+      binwidth = 20,
+      center = 10,
+      aes(label = ifelse(..count.. > 0, ..count.., NA_integer_)),
+      vjust    = -0.5,
+      size      = 3
+    ) +
+    labs(
+      x     = "sequence length",
+      y     = "count"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      panel.grid.minor = element_blank(),
+      axis.line.x = element_line(color = "gray60", size = 0.3),
+      axis.line.y = element_line(color = "gray60", size = 0.3)
+    )
+
+length_dist_plot
+```
+Now let's look at the distribution of amino acids in the positive dataset. 
+
+```{r}
+# 1) Define the full set of 20 standard amino acids
+all_aa <- c("A","R","N","D","C","Q","E","G","H","I",
+            "L","K","M","F","P","S","T","W","Y","V")
+
+# 2) Compute counts, fill in zeros for missing AAs, and sort
+aa_counts <- positive_labels_2 %>%
+  count(residue, name = "n") %>%                        # count observed residues
+  complete(residue = all_aa, fill = list(n = 0)) %>%    # ensure all_aa appear
+  arrange(desc(n), residue)                             # sort by count, then AA
+
+# 3) Plot
+ggplot(aa_counts, aes(
+    x = factor(residue, levels = residue),  # preserve this custom order
+    y = n
+  )) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = n), vjust = -0.5, size = 3) +
+  scale_x_discrete(drop = FALSE) +
+  labs(
+    x = "Amino Acid",
+    y = "Count",
+    title = "Positive dataset positions"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(hjust = 1)
+  )
+
+```
+Now we need to look at the distribution of amino acids in the negative dataset:
+
+```{r}
+
+#Compute counts, fill in zeros for missing AAs, and sort
+aa_counts <- negative_labels %>%
+  count(residue, name = "n") %>%                        # count observed residues
+  complete(residue = all_aa, fill = list(n = 0)) %>%    # ensure all_aa appear
+  arrange(desc(n), residue)                             # sort by count, then AA
+
+ggplot(aa_counts, aes(
+    x = factor(residue, levels = residue),  # preserve this custom order
+    y = n
+  )) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = n), vjust = -0.5, size = 3) +
+  scale_x_discrete(drop = FALSE) +
+  labs(
+    x = "Amino Acid",
+    y = "Count",
+    title = "Negative dataset positions"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(hjust = 1)
+  )
+
+```
+Now I want to look at the raw activation distribution for the positive and negative datasets:
+
+Results: 
+
+Num zero activations in pos datset: 34,926,585 total: 35,379,200
+percent non-zero 1.28%
+
+
+Num zero activations in neg datset: 34,900,639 total: 35,379,200
+percent non-zero 1.35%
+
+I removed all zero activations leaving the 1 percent non-zero activations. 
+Loading dataset with non-zero activations:
+```{r}
+raw_activations <- read.csv(file = "../../data/concept_groups/stats/group_2/raw_activations.csv")
+```
+
+```{r, fig.width = 10, fig.height = 5 }
+raw_activations %>%
+  ggplot(aes(x = activation)) +
+    geom_density() +
+    facet_wrap(~dataset) +
+    scale_x_continuous(
+      expand = expansion(mult = c(0,0))
+    ) +
+    scale_y_continuous(
+      expand = expansion(mult = c(0,0))
+    ) +
+    theme_cowplot()
+
+```
+Max activations are around 1 for both positive and negative datasets..
+
+Now let's compare the non-zero activations of the features with the highest F1 score 
+(activations and their count per dataset). 
+
+```{r}
+feature_4614 <- raw_activations %>%
+  filter(feature == "4614")
+
+
+feature_4614 %>%
+  ggplot(aes(x = activation, fill = dataset, color = dataset)) +
+    # use ..count.. instead of the default ..density..
+    geom_density(aes(y = ..count..), 
+                 alpha = 0.4, 
+                 position = "identity",
+                 size = 0.2) +
+    scale_x_continuous(expand = expansion(mult = c(0, 0))) +
+    scale_y_continuous(
+      limits = c(0, 4000),
+      expand = expansion(mult = c(0, 0))) +
+    labs(
+      x = "Activation",
+      y = "Count density",
+      title = "Feature 4614"
+    ) +
+    theme_cowplot() +
+    theme(
+      legend.position = c(0.8, 0.8)
+    )
+
+```
+
+
+```{r}
+feature_4614 %>%
+  ggplot(aes(x = dataset, y = activation, color = dataset, fill = dataset)) +
+    geom_violin(scale = "count", alpha = 0.3, show.legend = FALSE) +
+    geom_sina(scale = "count", alpha = 0.6, size = 0.5, show.legend = FALSE) +
+    scale_y_continuous(
+      limits = c(0,1),
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      x     = "Dataset",
+      y     = "Activation",
+      title = "Feature 4614"
+    ) +
+    theme_cowplot() +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      plot.title   = element_text(hjust = 0.5),
+      legend.position = "none"
+    )
+```
+```{r}
+feature_4614 %>%
+  count(dataset)
+```
+
+I now want to look at the original activations for feature 4614 with all the zeros to compare between datasets. 
+
+Loading ALL activations for feature 4614
+```{r}
+feature_4614_all <- read.csv(file = "../../data/concept_groups/stats/group_2/activations_for_feature_4614.csv")
+```
+
+Make sure that the positive and negative datasets are equal in count: 
+```{r}
+feature_4614_all %>%
+  count(dataset)
+```
+
+```{r}
+feature_4614_all %>%
+  ggplot(aes(x = activation, fill = dataset, color = dataset)) +
+    # use ..count.. instead of the default ..density..
+    geom_density(alpha = 0.4, size = 0.2) +
+    scale_fill_manual(
+      values = c(
+        positive = "#66C2A5",  # teal
+        negative = "#FC8D62"   # orange
+    )) +
+    scale_x_continuous(expand = expansion(mult = c(0.0, 0.0))) +
+    scale_y_continuous(
+      #limits = c(0, 4000),
+      expand = expansion(mult = c(0, 0))) +
+    labs(
+      x = "Activation",
+      y = "Density",
+      title = "Feature 4614"
+    ) +
+    theme_cowplot() +
+    theme(
+      legend.position = c(0.8, 0.8)
+    )
+```
+```{r}
+
+means <- feature_4614_all %>%
+  group_by(dataset) %>%
+  summarise(mean_activation = mean(activation, na.rm=TRUE)) %>%
+  pull(mean_activation)
+
+feature_4614_all %>%
+  ggplot(aes(x = dataset, y = activation, color = dataset, fill = dataset)) +
+    geom_violin(scale = "count", alpha = 0.3, show.legend = FALSE) +
+    #geom_sina(scale = "count", alpha = 0.6, size = 0.5, show.legend = FALSE) +
+    scale_y_continuous(
+      limits = c(0,1),
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      x     = "Dataset",
+      y     = "Activation",
+      title = "Feature 4614"
+    ) +
+    stat_summary( 
+      fun   = mean,
+      geom  = "point",
+      shape = 23,
+      size  = 2,  # diamond at the mean 
+      color = "black",
+      fill  = "black"
+    ) +
+    stat_summary(
+      fun       = mean, 
+      geom      = "text",
+      aes(label = sprintf("%.2f", ..y..)),
+      vjust     = -1,
+      hjust     = 3,
+      size      = 4,
+      color     = "black"
+    ) +
+    geom_hline(yintercept = means, 
+               color = "gray50", 
+               linetype = "dashed",
+               size       = 0.5) +
+    theme_cowplot() +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      plot.title   = element_text(hjust = 0.5),
+      legend.position = "none"
+    )
+```
+```{r}
+feature_4614_all %>%
+  group_by(dataset) %>%
+  summarise(mean = mean(activation))
+```
+What is the percent non-zeros in each of the datasets?
+```{r}
+feature_4614_all %>%
+  group_by(dataset) %>%
+  summarise(
+    n               = n(),
+    non_zero        = sum(activation != 0),
+    percent_non_zero = non_zero / n * 100
+  )
+```
+
+Now, for feature 4614, I want to see what the distribution of activations is for the first outer, first inner, second inner and second outer cleavage residues. 
+```{r}
+cleavage_positions <- final_cleavage_site_df %>%
+  # for each row, build a list of the 4 flanking positions
+  rowwise() %>%
+    mutate(
+      # build a tiny tibble of flank positions + their labels
+      flank = list(tibble::tibble(
+        residue_number = c(as.numeric(peptide_start) - 2,
+                           as.numeric(peptide_start) - 1,
+                           as.numeric(peptide_end)   + 1,
+                           as.numeric(peptide_end)   + 2),
+        cleavage       = c("cleavage_1",   
+                           "cleavage_1",
+                           "cleavage_2",
+                           "cleavage_2"),
+        cleavage_pos       = c("first\nouter",   
+                           "first\ninner",
+                           "second\ninner",
+                           "second\nouter")
+      ))
+    ) %>%
+    unnest(cols = c(flank)) %>% 
+    # drop any cleavage_1 when start == 1 or after_signal == TRUE
+    filter(!(cleavage == "cleavage_1" & (peptide_start == 1 | peptide_after_signal))) %>%
+    # drop any cleavage_2 when end == Length
+    filter(!(cleavage == "cleavage_2" & peptide_end == Length)) %>%
+    # also drop any positions that fall outside 1…Length
+    filter(residue_number >= 1, residue_number <= Length) %>%
+    # extract the amino acid at each flank position
+    mutate(residue = str_sub(Sequence, residue_number, residue_number))
+
+cleavage_positions <- cleavage_positions %>%
+  select(Entry, Sequence, Length, residue, residue_number, cleavage_pos) %>%
+  rename(position = "residue_number") %>%
+  distinct()
+```
+
+```{r}
+# joining this dataframe to the activations df
+joined_cleavage_positions <- left_join(cleavage_positions, feature_4614_all)
+```
+Now let's plot the distribution of activations per cleavage site position:
+```{r, warning=FALSE}
+joined_cleavage_positions <- joined_cleavage_positions %>%
+  mutate(
+    cleavage_pos = fct_relevel(
+      cleavage_pos,
+      "first\nouter",
+      "first\ninner",
+      "second\ninner",
+      "second\nouter"
+    )
+  )
+
+joined_cleavage_positions %>%
+  ggplot(aes(x = cleavage_pos, y = activation, color = cleavage_pos, fill = cleavage_pos)) +
+    geom_violin(scale = "count", alpha = 0.3, show.legend = FALSE) +
+    geom_sina(scale = "count", alpha = 0.6, size = 0.5, show.legend = FALSE) +
+    scale_y_continuous(
+      limits = c(0,1),
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      x     = "Cleavage site",
+      y     = "Activation",
+      title = "Feature 4614"
+    ) +
+    stat_summary( 
+      fun   = mean,
+      geom  = "point",
+      shape = 23,
+      size  = 2,  # diamond at the mean 
+      color = "black",
+      fill  = "black"
+    ) +
+    stat_summary(
+      fun       = mean, 
+      geom      = "text",
+      aes(label = sprintf("%.2f", ..y..)),
+      vjust     = -0.5,
+      hjust     = 2,
+      size      = 4,
+      color     = "black"
+    ) +
+    theme_cowplot() +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      plot.title   = element_text(hjust = 0.5),
+      legend.position = "none"
+    )
+```
+Note: there are overlaps in the data (some positions are present in several cleavage site groups due to alternative cleavage sites!
+
+Now I want to look at the distribution of amino acids in each of these categories.
+```{r, fig.height=10, fig.width= 8}
+# 1) Define the full set of 20 standard amino acids
+all_aa <- c("A","R","N","D","C","Q","E","G","H","I",
+            "L","K","M","F","P","S","T","W","Y","V")
+
+# 2) Determine the order of residues by descending count in the “first outer” facet
+residue_order <- joined_cleavage_positions %>%
+  filter(cleavage_pos == "first\nouter") %>%
+  count(residue) %>%                          # count each AA in first outer
+  complete(residue = all_aa, fill = list(n=0)) %>%  # ensure all AAs appear
+  arrange(desc(n)) %>%                        # sort by descending count
+  pull(residue)                               # extract ordered vector
+
+# 3) Build the counts for every facet, applying that global factor ordering
+aa_counts_by_pos <- joined_cleavage_positions %>%
+  mutate(residue = factor(residue, levels = residue_order)) %>%  
+  count(cleavage_pos, residue, name = "n") %>%
+  complete(cleavage_pos, residue, fill = list(n = 0))
+
+# 4) Plot: vertical facets, strip labels on left, shared x‐ordering
+ggplot(aa_counts_by_pos, aes(x = residue, y = n)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = n), vjust = -0.5, size = 2.5) +
+  scale_x_discrete(drop = FALSE) +
+  labs(
+    x     = "Amino Acid",
+    y     = "Count",
+    title = "Residue Counts by Cleavage Position"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text        = element_text(size = 10, face = "bold"),
+    panel.spacing.y   = unit(0.5, "lines"),
+    plot.title        = element_text(hjust = 0.5),
+    axis.text.x       = element_text(angle = 45, hjust = 1),
+    axis.title.y      = element_text(margin = margin(r = 10))
+  ) +
+  facet_col(
+    cleavage_pos ~ ., 
+    scales             = "free_y"
+  )
+
+```
+
+```{r}
+# Summarize percent non-zero per cleavage_pos
+pct_df <- joined_cleavage_positions %>%
+  group_by(cleavage_pos) %>%
+  summarise(
+    percent_non_zero = mean(activation != 0, na.rm = TRUE)*100,
+    .groups = "drop"
+  )
+
+ggplot(pct_df, aes(x = cleavage_pos, y = percent_non_zero)) +
+  geom_col(fill = "steelblue") +
+  geom_text(
+    aes(label = sprintf("%.1f%%", percent_non_zero)),
+    vjust = -0.5,
+    size  = 3
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, .05)),
+    limits = c(0, max(pct_df$percent_non_zero) * 1.1)
+  ) +
+  labs(
+    x = "Cleavage Position",
+    y = "Percent Non-Zero Activation",
+    title = "Non-Zero Activation Rate by Cleavage Position"
+  ) +
+  theme_cowplot() 
+```
+
+Now let's look at that 40% of cleavage site residues that got zero activation on feature 4614 and look at the distribution of amino acids there. 
+```{r}
+joined_cleavage_positions %>%
+  summarise(
+    percent_zero = mean(activation == 0, na.rm = TRUE) * 100
+  )
+  
+```
+```{r}
+# 1) Define the full set of 20 standard amino acids
+all_aa <- c("A","R","N","D","C","Q","E","G","H","I",
+            "L","K","M","F","P","S","T","W","Y","V")
+
+# 2) Filter for zero activations, count residues, fill in missing, and sort
+zero_aa_counts <- joined_cleavage_positions %>%
+  filter(activation == 0) %>%
+  count(residue, name = "n") %>%
+  complete(residue = all_aa, fill = list(n = 0)) %>%
+  arrange(desc(n), residue)
+
+# 3) Plot
+ggplot(zero_aa_counts, aes(
+    x = factor(residue, levels = residue),
+    y = n
+  )) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = n), vjust = -0.5, size = 3) +
+  scale_x_discrete(drop = FALSE) +
+  labs(
+    x     = "Amino Acid",
+    y     = "Count",
+    title = "Residues with zero activation"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+```{r}
+# 1) Define the full set of 20 standard amino acids
+all_aa <- c("A","R","N","D","C","Q","E","G","H","I",
+            "L","K","M","F","P","S","T","W","Y","V")
+
+# 2) Filter for zero activations, count residues, fill in missing, and sort
+nonzero_aa_counts <- joined_cleavage_positions %>%
+  filter(activation > 0.1) %>%
+  count(residue, name = "n") %>%
+  complete(residue = all_aa, fill = list(n = 0)) %>%
+  arrange(desc(n), residue)
+
+# 3) Plot
+ggplot(nonzero_aa_counts, aes(
+    x = factor(residue, levels = residue),
+    y = n
+  )) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = n), vjust = -0.5, size = 3) +
+  scale_x_discrete(drop = FALSE) +
+  labs(
+    x     = "Amino Acid",
+    y     = "Count",
+    title = "Residues with non-zero activation"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+Now I want to look at the percent zero activations by residue:
+```{r}
+# 2) Compute percent zero per residue type
+zero_pct_df <- joined_cleavage_positions %>%
+  group_by(residue) %>%
+  summarise(
+    percent_zero = 100 - (mean(activation == 0, na.rm = TRUE) * 100),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(percent_zero), residue)
+
+# 3) Plot
+ggplot(zero_pct_df, aes(
+    x = factor(residue, levels = residue),
+    y = percent_zero
+  )) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = sprintf("%.1f%%", percent_zero)),
+            vjust = -0.5, size = 3) +
+  scale_y_continuous(expand = expansion(mult = c(0, .05))) +
+  labs(
+    x     = "Amino Acid",
+    y     = "Percent",
+    title = "Percent of non-rero activations by residue"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+# let's look at the other winning features. 
+Feature: 7547
+
+Loading ALL activations for feature 7547
+```{r}
+feature_7547_all <- read.csv(file = "../../data/concept_groups/stats/group_2/activations_for_feature_7547.csv")
+```
+
+```{r}
+feature_7547_all %>%
+  ggplot(aes(x = activation, fill = dataset, color = dataset)) +
+    # use ..count.. instead of the default ..density..
+    geom_density(alpha = 0.4, size = 0.2) +
+    scale_fill_manual(
+      values = c(
+        positive = "#66C2A5",  # teal
+        negative = "#FC8D62"   # orange
+    )) +
+    scale_x_continuous(expand = expansion(mult = c(0.0, 0.0))) +
+    scale_y_continuous(
+      #limits = c(0, 4000),
+      expand = expansion(mult = c(0, 0))) +
+    labs(
+      x = "Activation",
+      y = "Density",
+      title = "Feature 7547"
+    ) +
+    theme_cowplot() +
+    theme(
+      legend.position = c(0.8, 0.8)
+    )
+```
+
+```{r}
+
+means <- feature_7547_all %>%
+  group_by(dataset) %>%
+  summarise(mean_activation = mean(activation, na.rm=TRUE)) %>%
+  pull(mean_activation)
+
+feature_7547_all %>%
+  ggplot(aes(x = dataset, y = activation, color = dataset, fill = dataset)) +
+    geom_violin(scale = "count", alpha = 0.3, show.legend = FALSE) +
+    #geom_sina(scale = "count", alpha = 0.6, size = 0.5, show.legend = FALSE) +
+    scale_y_continuous(
+      limits = c(0,1),
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      x     = "Dataset",
+      y     = "Activation",
+      title = "Feature 7547"
+    ) +
+    stat_summary( 
+      fun   = mean,
+      geom  = "point",
+      shape = 23,
+      size  = 2,  # diamond at the mean 
+      color = "black",
+      fill  = "black"
+    ) +
+    stat_summary(
+      fun       = mean, 
+      geom      = "text",
+      aes(label = sprintf("%.2f", ..y..)),
+      vjust     = -1,
+      hjust     = 3,
+      size      = 4,
+      color     = "black"
+    ) +
+    geom_hline(yintercept = means, 
+               color = "gray50", 
+               linetype = "dashed",
+               size       = 0.5) +
+    theme_cowplot() +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      plot.title   = element_text(hjust = 0.5),
+      legend.position = "none"
+    )
+```
+Percent of non-zeros in the dataset:
+```{r}
+feature_7547_all %>%
+  group_by(dataset) %>%
+  summarise(
+    n               = n(),
+    non_zero        = sum(activation != 0),
+    percent_non_zero = non_zero / n * 100
+  )
+```
+
+Feature: 8284
+
+Loading ALL activations for feature 7547
+```{r}
+feature_8284_all <- read.csv(file = "../../data/concept_groups/stats/group_2/activations_for_feature_8284.csv")
+```
+
+```{r}
+feature_8284_all %>%
+  ggplot(aes(x = activation, fill = dataset, color = dataset)) +
+    # use ..count.. instead of the default ..density..
+    geom_density(alpha = 0.4, size = 0.2) +
+    scale_fill_manual(
+      values = c(
+        positive = "#66C2A5",  # teal
+        negative = "#FC8D62"   # orange
+    )) +
+    scale_x_continuous(expand = expansion(mult = c(0.0, 0.0))) +
+    scale_y_continuous(
+      #limits = c(0, 4000),
+      expand = expansion(mult = c(0, 0))) +
+    labs(
+      x = "Activation",
+      y = "Density",
+      title = "Feature 8284"
+    ) +
+    theme_cowplot() +
+    theme(
+      legend.position = c(0.8, 0.8)
+    )
+```
+
+```{r}
+
+means <- feature_8284_all %>%
+  group_by(dataset) %>%
+  summarise(mean_activation = mean(activation, na.rm=TRUE)) %>%
+  pull(mean_activation)
+
+feature_8284_all %>%
+  ggplot(aes(x = dataset, y = activation, color = dataset, fill = dataset)) +
+    geom_violin(scale = "count", alpha = 0.3, show.legend = FALSE) +
+    #geom_sina(scale = "count", alpha = 0.6, size = 0.5, show.legend = FALSE) +
+    scale_y_continuous(
+      limits = c(0,1),
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      x     = "Dataset",
+      y     = "Activation",
+      title = "Feature 8284"
+    ) +
+    stat_summary( 
+      fun   = mean,
+      geom  = "point",
+      shape = 23,
+      size  = 2,  # diamond at the mean 
+      color = "black",
+      fill  = "black"
+    ) +
+    stat_summary(
+      fun       = mean, 
+      geom      = "text",
+      aes(label = sprintf("%.2f", ..y..)),
+      vjust     = -1,
+      hjust     = 3,
+      size      = 4,
+      color     = "black"
+    ) +
+    geom_hline(yintercept = means, 
+               color = "gray50", 
+               linetype = "dashed",
+               size       = 0.5) +
+    theme_cowplot() +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      plot.title   = element_text(hjust = 0.5),
+      legend.position = "none"
+    )
+```
+Percent of non-zeros in the dataset:
+```{r}
+feature_8284_all %>%
+  group_by(dataset) %>%
+  summarise(
+    n               = n(),
+    non_zero        = sum(activation != 0),
+    percent_non_zero = non_zero / n * 100
+  )
+```
+
+
+## RAW activations of feature 4614 and 7547
+```{r}
+activations <- read.csv("../../data/concept_groups/stats/group_2/feature_4614_activations_ALL.csv")
+```
+
+
+```{r feature‐profiles, fig.width=6, fig.height=600, echo=FALSE}
+
+ggplot(activations, aes(x = position, y = activation)) +
+  geom_line(color = "steelblue") +
+  facet_wrap(~ Entry, ncol = 1, scales = "free_y") +
+  labs(
+    x     = "Residue Position",
+    y     = "Activation",
+    title = "Feature 4614 Activation Profiles"
+  ) +
+  theme_cowplot() +
+  theme(
+    # turn on the x‐axis line, ticks & text for every panel
+    axis.line.x       = element_line(color = "black"),
+    axis.ticks.x      = element_line(color = "black"),
+    axis.text.x       = element_text(color = "black"),
+    axis.title.x      = element_text(margin = margin(t = 8)),
+    # keep strip labels small so they don’t push the axis off
+    strip.text        = element_text(size = 6),
+    panel.spacing     = unit(0.5, "lines"),
+    plot.title        = element_text(hjust = 0.5)
+  )
+```
+
+

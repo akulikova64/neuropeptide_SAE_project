@@ -1,0 +1,41 @@
+
+#List of commands I used to install all packages for the "get_SAE_embeddings.py" script:
+
+pip install git+https://github.com/ElanaPearl/InterPLM.git
+
+conda install pytorch torchvision torchaudio -c pytorch
+
+conda install -c conda-forge huggingface_hub
+
+conda install -c conda-forge fair-esm
+
+conda install -c conda-forge transformers
+
+
+
+Updated:
+
+# Create a fresh environment (with pip):
+conda create -n interplm python=3.10 pip
+conda activate interplm
+
+#Install your dependencies inside it:
+# PyTorch + friends
+conda install pytorch torchvision torchaudio -c pytorch
+conda install -c conda-forge huggingface_hub fair-esm transformers
+
+# Then install InterPLM from GitHub
+pip install git+https://github.com/ElanaPearl/InterPLM.git
+
+#=====================================
+# Follow this:
+#=====================================
+
+# environment:
+conda activate interplm
+
+# (Re-install anything that might be missing)
+conda install -c conda-forge huggingface_hub fair-esm transformers
+
+# Finally pull in InterPLM itself
+pip install --upgrade git+https://github.com/ElanaPearl/InterPLM.git

@@ -1,0 +1,262 @@
+---
+title: "group_2_part_4"
+output: html_document
+date: "2025-05-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cowplot)
+library(ggforce)
+library(ggridges)
+options(scipen = 999)
+library(colorspace)
+```
+
+Here, I try using only a single flanking residue around the mature peptide as the cleavage site. 
+
+# start with "right_after_signal" from "group_2_analysis.Rmd"
+=========================== POSITIVE DATASET ===========================================================================
+
+Getting the final cleavage site df for creating labels (positive)
+```{r}
+final_cleavage_site_df <- right_after_signal %>%
+  filter(!(peptide_start == 1 & peptide_end == Length)) # filtering out mature peptides
+```
+
+Getting the positive data labels for the cleavage sites
+```{r}
+library(stringr)
+
+positive_labels <- final_cleavage_site_df %>%
+  # for each row, build a list of the 4 flanking positions
+  rowwise() %>%
+    mutate(
+      # build a tiny tibble of flank positions + their labels
+      flank = list(tibble::tibble(
+        residue_number = c(as.numeric(peptide_start) - 1,
+                           as.numeric(peptide_end)   + 1),
+        cleavage       = c("cleavage_1",   
+                           "cleavage_2")
+      ))
+    ) %>%
+    unnest(cols = c(flank)) %>% 
+    # drop any cleavage_1 when start == 1 or after_signal == TRUE
+    filter(!(cleavage == "cleavage_1" & (peptide_start == 1 | peptide_after_signal))) %>%
+    # drop any cleavage_2 when end == Length
+    filter(!(cleavage == "cleavage_2" & peptide_end == Length)) %>%
+    # also drop any positions that fall outside 1…Length
+    filter(residue_number >= 1, residue_number <= Length) %>%
+    # extract the amino acid at each flank position
+    mutate(residue = str_sub(Sequence, residue_number, residue_number))
+    
+positive_labels_2 <- positive_labels %>%
+  select(Entry, Sequence, Length, residue, residue_number) %>%
+  distinct()
+
+positive_labels_save <- positive_labels_2 %>%
+  select(Entry, residue, residue_number) %>%
+  ungroup() %>%
+  distinct()
+
+write_csv(positive_labels_save, "../../data/concept_groups/sequences/group_2/training/group_2_positive_single_flank.csv")
+
+```
+
+==================== NEGATIVE DATASET ================================================
+Now we need to sample the negative dataset:
+First we make a table that contains everything we want to exclude. 
+Besides the cleavage sites, I also want to exclude the adjacent neighbors to the cleavage sites (just in case). 
+```{r}
+pos_labels_with_neighbors <- positive_labels_2 %>%
+  select(Entry, residue_number) %>%
+  # add the -1 and +1 neighbors
+  mutate(
+    neighbor_minus = residue_number - 1,
+    neighbor_minus_2 = residue_number - 2,
+    neighbor_plus  = residue_number + 1,
+    neighbor_plus_2  = residue_number + 2
+  ) %>%
+  pivot_longer(
+    cols      = c(residue_number, neighbor_minus, neighbor_minus_2, neighbor_plus, neighbor_plus_2),
+    values_to = "residue_number"
+  ) %>%
+  filter(residue_number >= 1) %>%       # drop any <1
+  select(Entry, residue_number) %>%
+  distinct()
+```
+
+Now, we need to count how many cleavage site resides (positives) we have per sequence/Entry. 
+Remember that some sequences have multiple alternative cleavage sites.
+```{r}
+positives_count <- positive_labels_2 %>%
+  dplyr::count(Entry, name = "n_pos")
+```
+
+
+Each sequence is expanded to have one row per residue (will be used later)
+I kept the sequence row as is to later extract the actual residue
+```{r}
+expanded_seqs <- positive_labels_2 %>%
+  select(Entry, Sequence, Length) %>%
+  distinct() %>%
+  uncount(Length) %>%                   # replicate each row 'Length' times
+  group_by(Entry) %>%
+  mutate(residue_number = row_number()) %>%
+  ungroup() 
+```
+
+Next, we need to remove the excluded positions
+```{r}
+expanded_seqs <- expanded_seqs %>%
+  anti_join(pos_labels_with_neighbors, by = c("Entry", "residue_number"))
+```
+
+Here we sample the negative dataset positions. (Try not to rerun this) each time it will resample
+```{r}
+negative_labels <- expanded_seqs %>%
+  left_join(positives_count, by = "Entry") %>% # adding the count of positive dataset residues per Entry/sequence
+  group_by(Entry) %>%
+  sample_n(size = unique(n_pos)) %>%    # sample same number as positives
+  ungroup() %>%
+  mutate(
+    residue = str_sub(Sequence, residue_number, residue_number) # str_sub(string, start, end)
+  ) %>%
+  select(Entry, residue, residue_number)
+```
+
+Saving the sampled negative data 
+```{r}
+write_csv(negative_labels, "../../data/concept_groups/sequences/group_2/training/group_2_negative_single_flank.csv")
+
+```
+
+Making sure the sampling worked and we have equal number of positives. 
+```{r}
+# How many positives per Entry?
+pos_counts <- positive_labels_save %>%
+  dplyr::count(Entry, name = "n_pos")
+
+# How many negatives did I actually get per Entry?
+neg_counts <- negative_labels %>%
+  dplyr::count(Entry, name = "n_neg")
+
+# Join and look for any Entry where n_neg < n_pos
+mismatches <- pos_counts %>%
+  left_join(neg_counts, by = "Entry") %>%
+  mutate(less_neg = ifelse(n_neg < n_pos, TRUE, FALSE))
+
+mismatches          # see which ones and by how much
+```
+
+===================================================================================================================
+# ========================== Single flanking residue F1 scores computed in python =================================
+===================================================================================================================
+
+```{r}
+winning_F1_single_flank <- read.csv(file = "../../data/concept_groups/F1_scores/group_2/single_flank_F1/winning_thresholds.csv")
+# new modified: 
+# old unmodified: winning F1 is 0.67 (feature 4614)
+```
+
+#--------------------------- FEATURE 8216 -------------------------------------------------------------------
+
+```{r}
+feature <- 8216
+```
+
+```{r}
+
+feature_df <- read.csv(file = glue("../../data/concept_groups/stats/group_2/activations_for_feature_{feature}.csv"))
+```
+
+```{r}
+
+feature_df %>%
+  ggplot(aes(x = activation, fill = dataset, color = dataset)) +
+    # use ..count.. instead of the default ..density..
+    geom_density(alpha = 0.4, size = 0.2) +
+    scale_fill_manual(
+      values = c(
+        positive = "#66C2A5",  # teal
+        negative = "#FC8D62"   # orange
+    )) +
+    scale_x_continuous(expand = expansion(mult = c(0.0, 0.0))) +
+    scale_y_continuous(
+      #limits = c(0, 4000),
+      expand = expansion(mult = c(0, 0))) +
+    labs(
+      x = "Activation",
+      y = "Density",
+      title = glue("Feature {feature}")
+    ) +
+    theme_cowplot() +
+    theme(
+      legend.position = c(0.8, 0.8)
+    )
+```
+
+```{r}
+
+means <- feature_df %>%
+  group_by(dataset) %>%
+  summarise(mean_activation = mean(activation, na.rm=TRUE)) %>%
+  pull(mean_activation)
+
+feature_df %>%
+  ggplot(aes(x = dataset, y = activation, color = dataset, fill = dataset)) +
+    geom_violin(scale = "count", alpha = 0.3, show.legend = FALSE) +
+    #geom_sina(scale = "count", alpha = 0.6, size = 0.5, show.legend = FALSE) +
+    scale_y_continuous(
+      limits = c(0,1),
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      x     = "Dataset",
+      y     = "Activation",
+      title = glue("Feature {feature}")
+    ) +
+    stat_summary( 
+      fun   = mean,
+      geom  = "point",
+      shape = 23,
+      size  = 2,  # diamond at the mean 
+      color = "black",
+      fill  = "black"
+    ) +
+    stat_summary(
+      fun       = mean, 
+      geom      = "text",
+      aes(label = sprintf("%.2f", ..y..)),
+      vjust     = -1,
+      hjust     = 3,
+      size      = 4,
+      color     = "black"
+    ) +
+    geom_hline(yintercept = means, 
+               color = "gray50", 
+               linetype = "dashed",
+               size       = 0.5) +
+    theme_cowplot() +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      plot.title   = element_text(hjust = 0.5),
+      legend.position = "none"
+    )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

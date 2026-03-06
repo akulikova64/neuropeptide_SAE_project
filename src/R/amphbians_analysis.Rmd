@@ -1,0 +1,64 @@
+---
+title: "amphibians"
+output: html_document
+date: "2026-03-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(cowplot)
+```
+
+```{r}
+preds_amph <- read_csv("../../data/amphibian_analysis/amphibians_layer18_logreg_top320_predictions.csv",
+                  show_col_types = FALSE)
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(cowplot)
+
+binned_amph <- preds_amph %>%
+  filter(!is.na(probability)) %>%
+  mutate(
+    prob_bin = cut(
+      probability,
+      breaks = seq(0, 1, by = 0.1),
+      include.lowest = TRUE,
+      right = TRUE,
+      labels = paste0(seq(0, 90, 10), "%–", seq(10, 100, 10), "%")
+    )
+  ) %>%
+  count(prob_bin, name = "total") %>%
+  mutate(prob_bin = fct_explicit_na(prob_bin, na_level = "Unbinned"))
+
+ggplot(binned_amph, aes(x = fct_rev(prob_bin), y = total)) +
+  geom_col(
+    fill  = "lavender",
+    color = "grey40",
+    size  = 0.3
+  ) +
+  geom_text(
+    aes(label = total),
+    vjust = -0.3,
+    size = 4
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.12))
+  ) +
+  labs(
+    x = "Predicted probability bin",
+    y = "Count"
+  ) +
+  theme_cowplot() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```

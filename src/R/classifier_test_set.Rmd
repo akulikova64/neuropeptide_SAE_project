@@ -1,0 +1,833 @@
+---
+title: "test_set.Rmd"
+output: html_document
+date: "2025-06-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cowplot)
+library(ggforce)
+library(ggridges)
+options(scipen = 999)
+library(colorspace)
+library(tidytext)    # for reorder_within() and scale_x_reordered()
+```
+
+
+```{r}
+human_neuro_pep <- read.csv(file = "../../data/test_dataset_stats/human_neuro_names.csv")
+```
+
+Now get "labeled_bins_save" df from group_2_binned_by_size.Rmd
+
+Let's see if there are any overlaps between the Entries in the two dataset. 
+I want to know If I can use the human neuropeptides as my test dataset. 
+
+```{r}
+overlap <- inner_join(human_neuro_pep, labeled_bins_save)
+```
+
+Now let's remove the common Entries between the two datasets and save this unique list to a csv. 
+```{r}
+library(dplyr)
+
+# Option 1: anti_join
+cleaned_neuropep <- anti_join(
+  human_neuro_pep,
+  overlap,
+  by = "Entry"
+)
+```
+Saving as csv to later pull the fastas from Uniprot:
+
+```{r}
+write.csv(cleaned_neuropep, file = "../../data/test_dataset_stats/human_neuro_names_clean.csv", row.names = FALSE)
+```
+Now I did a pairwise alignement between the original 306 peps I used to find features and my new human neuropeptide test set:
+
+```{r}
+alignment_results <- read.csv(file = "../../data/test_dataset_stats/pairwise_alignment_results.csv")
+
+```
+
+Now I am going to remove the peptides that are more than 50% similar to any of the original 306 peps that I used to find features. 
+
+First, I am saving the Entries that have >50% similarity:
+```{r}
+bad_entries <- alignment_results %>%
+  filter(percent_seq_sim > 50.0) 
+```
+
+Removing the too close entries from the alignment_results df:
+```{r}
+alignment_results_filtered <- alignment_results %>%
+  filter(!Entry_test %in% c("E9PDJ7", "A0A250SI41"))
+```
+
+Now I want to plot a density plot of how similar the remaining test sequences are to the 303 peptides used for training.
+```{r}
+alignment_results_filtered %>%
+  ggplot(aes(x = percent_seq_sim)) +
+  geom_density() +
+  scale_x_continuous(
+    expand = expansion(mult = c(0,0.05)),
+    limits = c(0,50)) +
+  scale_y_continuous(expand = expansion(mult = c(0,0))) +
+  xlab(label = "percent sequence similarity") +
+  theme_cowplot()
+```
+Now I want to load in the mature peptides and label sites as cleavage sites in each peptide. 
+After, we are going to have to sample the positive and negative data. 
+First, let's get the mature peptides joined in (with the cleavage sites on the ends)
+
+```{r}
+mature_human_peps <- read.csv(file = "../../data/test_dataset_stats/human_mature_pep.csv")
+```
+Now let's join the two datasets together:
+```{r}
+mature_human_peps_clean <- mature_human_peps %>%
+  rename("Entry" = Uniprot,
+         "peptide" = Sequence.mature.peptide.s..plus.cleavage.sites) %>%
+  select(Entry, peptide)
+
+
+joined_human <- alignment_results_filtered %>%
+  select(Entry_test, test_seq) %>%
+  distinct() %>%
+  rename("Entry" = Entry_test,
+         "propeptide" = test_seq) %>%
+  left_join(mature_human_peps_clean) %>%
+  filter(peptide != propeptide) %>% # removing propeptides that are mature peptides
+  distinct()
+```
+
+```{r}
+joined_human %>%
+  select(Entry) %>%
+  distinct() %>%
+  dplyr::count()
+```
+Here, I am downloading the Uniprot annotations for the 100 entries. 
+```{r}
+annot_100 <- read.csv(file = "../../data/test_dataset_stats/human_mature_pep_annotations.csv", na.strings = c("", "NA"),
+  stringsAsFactors = FALSE)
+```
+
+```{r}
+human_79 <- joined_human %>%
+  select(Entry) %>%
+  distinct() 
+```
+
+```{r}
+filtered_annot <- annot_100 %>%
+  inner_join(human_79)
+```
+```{r}
+clean_annot_human <- filtered_annot %>%
+  filter(!is.na(Peptide))
+```
+
+
+Now I am labeling the cleavage sites as found in the propeptide:
+
+Locating each peptide in the propeptide:
+```{r}
+# loc_df <- joined_human %>%
+#   # find start/end of the mature peptide and compute propeptide length
+#   mutate(
+#     loc                  = str_locate(propeptide, peptide),
+#     start                = loc[,1],
+#     end                  = loc[,2],
+#     propeptide_length    = str_length(propeptide)
+#   ) %>%
+#   select(Entry, propeptide, propeptide_length, start, end, peptide) %>%
+#   na.omit() %>%
+#   mutate(cleavage_2 = if_else(propeptide_length == end), FALSE, TRUE) %>%
+#   mutate(cleavage_1 = if_else())
+
+```
+
+Now I want to manually select peptides that seem to have a correct cleavage site:
+```{r}
+# list_of_human_peps <- c("P01042", "P01178", "P01189", "P01275", "P01344", "P04808", "P05305", "P06881", "P08949", "P10092", 
+#                         "P10645", "P10997", "P12272", "P18509", "P81277", "Q8WXF3", "Q9UHG2", "O15240")
+# 
+# remove_peps_list <- c("ISLMKRPPGFSPFR",
+#                  "WGHEK",
+#                  "QESQSEEIDCNDKDLFKAVDAALKKYNSQNQSNNQFVLYRITEATKTVGSDTFYSFKYEIKEGDCPVQSGKTWQDCEYKDAAKAATGECTATVGKRSSTKFSVATQTCQITPAEGPVVTAQYDCLGCVHPISTQSPDLEPILRHGIQYFNNNTQHSSLFMLNEVKRAQRQVVAGLNFRITYSIVQTNCSKENFLFLTPDCKSLWNGDTGECTDNAYIDIQLRIASFSQNCDIYPGKDFVQPPTKICVGCPRDIPTNSPELEETLTHTITKLNAENNATFYFKIDNVKKARVQVVAGKKYFIDFVARETTCSKESNEELTESCETKKLGQSLDCNAEVYVVPWEKKIYPTVNCQPLGMISLMKRPPGFSPFRSSRIGEIKEETTVSPPHTSMAPAQDEERDSGKEQGHTRRHDWGHEKQRKHNLGHGHKHERDQGHGHQRGHGLGHGHEQQHGLGHGHKFKLDDDLEHQGGHVLDHGHKHKHGHGHGKHKNKGKKNGKHNGWKTEHLASSSEDSTTPSAQTQEKTEGPTPIPSLAKPGVTVTFSDFQDSDLIATMMPPISPAPIQSDDDWIPDIQIDPNGLSFNPISDFPDTTSPKCPGRPWKSVSEINPTTQMKESYYFDLTDGLS",
+#                  "QESQSEEIDCNDKDLFKAVDAALKKYNSQNQSNNQFVLYRITEATKTVGSDTFYSFKYEIKEGDCPVQSGKTWQDCEYKDAAKAATGECTATVGKRSSTKFSVATQTCQITPAEGPVVTAQYDCLGCVHPISTQSPDLEPILRHGIQYFNNNTQHSSLFMLNEVKRAQRQVVAGLNFRITYSIVQTNCSKENFLFLTPDCKSLWNGDTGECTDNAYIDIQLRIASFSQNCDIYPGKDFVQPPTKICVGCPRDIPTNSPELEETLTHTITKLNAENNATFYFKIDNVKKARVQVVAGKKYFIDFVARETTCSKESNEELTESCETKKLGQSLDCNAEVYVVPWEKKIYPTVNCQPLGMISLMKRP",
+#                  "AYRPSETLCGGELVDTLQFVCGDRGFYFSRPASRVSRRSRGIVEECCFRSCDLALLETYCATPAKSERD",
+#                  "CYIQNCPLGGK"
+#                  )
+# 
+# filtered_loc_df <- loc_df %>%
+#   filter(Entry %in% list_of_human_peps) %>%
+#   mutate(use_end = if_else(propeptide_length == end, FALSE, TRUE)) %>%
+#   filter(!peptide %in% remove_peps_list)
+```
+
+Let's now save the entries as a fasta file.
+```{r}
+# for_fasta_human <- filtered_loc_df %>%
+#   select(Entry, propeptide) %>%
+#   distinct()
+# 
+# # Create FASTA-formatted lines: ">ID" on one line, followed by the sequence on the next
+# fasta_lines_2 <- apply(for_fasta_human, 1, function(row) {
+#   paste0(">", row["Entry"], "\n", row["propeptide"])
+# })
+# 
+# # Write these lines to a .fasta file
+# writeLines(fasta_lines_2, con = "../../data/group_2_test.fasta")
+```
+
+Here I will need to make the group_2_positive_test.csv and group_2_negative_test.csv (sample positions)
+```{r}
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(purrr)
+
+test_labels <- filtered_loc_df %>%
+  # 1) collect the 4 cleavage indices per peptide and collapse per propeptide
+  group_by(Entry, propeptide) %>%
+  summarise(
+    cleavage_positions = list(
+      unique(
+        unlist(
+          lapply(seq_along(start), function(i) {
+            c(
+              start[i],
+              start[i] + 1,
+              end[i]   - 1,
+              end[i]
+            )
+          })
+        )
+      )
+    ),
+    .groups = "drop"
+  ) %>%
+  # 2) split into single residues
+  mutate(residue = str_split(propeptide, "")) %>%
+  unnest_longer(
+    residue,
+    indices_to = "residue_number",
+    values_to  = "residue"
+  ) %>%
+  # 3) rowwise test
+  rowwise() %>%
+  mutate(
+    cleavage_site = residue_number %in% cleavage_positions
+  ) %>%
+  ungroup() %>%
+  select(Entry, residue, residue_number, cleavage_site)
+
+```
+
+Now I need to get the positive and negative samples for the test set. 
+```{r}
+
+
+# Assume your labeled data is in `labeled_df`
+# with columns: Entry, residue, residue_number, cleavage_site
+
+# 1) Positive set: all cleavage‐site positions
+pos_df <- test_labels %>%
+  filter(cleavage_site) %>%
+  select(
+    Entry,
+    residue,
+    residue_num = residue_number
+  )
+```
+
+```{r}
+# 2) Count how many positives per Entry
+pos_counts <- pos_df %>%
+  dplyr::count(Entry, name = "n_pos")
+```
+
+```{r}
+set.seed(42) 
+
+# 3) Negative set: sample the same number of non‐cleavage sites per Entry
+neg_df <- test_labels %>%
+  filter(! cleavage_site) %>%
+  inner_join(pos_counts, by = "Entry") %>%
+  group_by(Entry) %>%
+  sample_n(size = first(n_pos)) %>%
+  ungroup() %>%
+  select(
+    Entry,
+    residue,
+    residue_num = residue_number
+  )
+```
+
+```{r}
+# 4) Write out CSVs
+write_csv(pos_df, "../../data/concept_groups/sequences/group_2/training/group_2_test_positives.csv")
+write_csv(neg_df, "../../data/concept_groups/sequences/group_2/training/group_2_test_negatives.csv")
+
+```
+
+
+Now I want to look at the pairwise alignment scores within the 303 peptides.
+Are there sequences too similar? Is is worth clustering by sequence sim?
+```{r}
+training_alignment_results <- read.csv(file = "../../data/cleavage_site_sequences_pairwise.csv")
+```
+Now let's look at the disctribution of sequence similarith in this dataset:
+
+```{r}
+training_alignment_results %>%
+  ggplot(aes(x = percent_seq_sim)) +
+  geom_density() +
+  scale_x_continuous(expand = expansion(mult = c(0,0))) +
+  scale_y_continuous(expand = expansion(mult = c(0,0))) +
+  xlab(label = "percent sequence similarity") +
+  theme_cowplot()
+```
+
+```{r}
+training_alignment_results %>%
+  #filter(percent_seq_sim > 40) %>%
+  ggplot(aes(x = percent_seq_sim)) +
+  # color the bars and add a border
+  geom_histogram(
+    binwidth = 5,
+    center   = 2.5,
+    fill     = "steelblue",
+    color    = "gray40",
+    alpha    = 0.7
+  ) +
+  # add counts above each bar
+  geom_text(
+    stat      = "bin",
+    binwidth  = 5,
+    center    = 2.5,
+    aes(label = ..count..),
+    vjust     = -0.5,
+    size      = 4
+  ) +
+  scale_x_continuous(
+    expand = expansion(mult = c(0, 0.05)),
+    limits = c(0, 100),
+    breaks = seq(0, 100, by = 10)
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  xlab("percent sequence similarity") +
+  theme_cowplot()
+
+```
+
+Now I want to save the top F1 scores to a csv file to use in my linear regression model. 
+```{r}
+top_scores_hybrid <- winning_F1_modified %>%
+  arrange(desc(winning_F1_score)) %>%  # sort so highest F1 is first
+  slice_head(n = 2000) %>%               # take the top 100
+  mutate(rank = row_number()) %>%       # assign rank 1 to the highest F1
+  select(feature, rank)
+```
+
+saving to csv:
+```{r}
+write.csv(top_scores_hybrid, file = "../../data/linear_regression_data/feature_ranking_hybrid.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+#------------------------------------------------------------------------------------------------------------------------------------------------
+#-----------  LOGISTIC REGRESSION RESULTS -------------------------------------------------------------------------------------------------------
+#------------------------------------------------------------------------------------------------------------------------------------------------
+
+Now here are the classifier results across 6 different homology cutoffs.
+```{r}
+log_reg_40 <- read.csv(file = "../../data/linear_regression_data/linear_regression_results_40_hom.csv")
+log_reg_50 <- read.csv(file = "../../data/linear_regression_data/linear_regression_results_50_hom.csv")
+log_reg_60 <- read.csv(file = "../../data/linear_regression_data/linear_regression_results_60_hom.csv")
+log_reg_70 <- read.csv(file = "../../data/linear_regression_data/linear_regression_results_70_hom.csv")
+log_reg_80 <- read.csv(file = "../../data/linear_regression_data/linear_regression_results_80_hom.csv")
+log_reg_90 <- read.csv(file = "../../data/linear_regression_data/linear_regression_results_90_hom.csv")
+```
+
+combining data into a single df
+```{r}
+
+combined <- bind_rows(
+  `40` = log_reg_40,
+  `50` = log_reg_50,
+  `60` = log_reg_60,
+  `70` = log_reg_70,
+  `80` = log_reg_80,
+  `90` = log_reg_90,
+  .id  = "perc_homology"
+) %>%
+  mutate(
+    # make sure perc_homology is numeric, not a string
+    perc_homology = as.numeric(perc_homology)
+  )
+```
+
+Now I want a line plot of validation accuracy across number of features. Each percent homology
+will be a line of a different color. 
+```{r}
+
+ggplot(combined, aes(x = num_features, y = validation, color = factor(perc_homology))) +
+  geom_line(size = 1) +
+  scale_color_manual(
+    name   = "training/validation\nset homology (%)",
+    values = qualitative_hcl(
+      n       = length(unique(combined$perc_homology)),
+      palette = "Set 2"
+    )
+  ) +
+  labs(
+    x = "Number of Features",
+    y = "Validation Accuracy (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+
+```
+Now, let's finish building out first test set (human neuropeptides) and then run this logistic regression on our test set and get the result as 
+single percent accuracy. 
+
+Test set done (see code above). Remember to go back and improve it. More test sets will be added. 
+Done. Let's plot the test results.
+
+```{r}
+log_reg_40_test <- read.csv(file = "../../data/linear_regression_data/linear_regression_results_40_hom_test.csv")
+log_reg_50_test <- read.csv(file = "../../data/linear_regression_data/linear_regression_results_50_hom_test.csv")
+log_reg_60_test <- read.csv(file = "../../data/linear_regression_data/linear_regression_results_60_hom_test.csv")
+log_reg_70_test <- read.csv(file = "../../data/linear_regression_data/linear_regression_results_60_hom_test.csv")
+log_reg_80_test <- read.csv(file = "../../data/linear_regression_data/linear_regression_results_80_hom_test.csv")
+log_reg_90_test <- read.csv(file = "../../data/linear_regression_data/linear_regression_results_90_hom_test.csv")
+
+```
+
+```{r}
+combined_test <- bind_rows(
+  `40` = log_reg_40_test,
+  `50` = log_reg_50_test,
+  `60` = log_reg_60_test,
+  `70` = log_reg_70_test,
+  `80` = log_reg_80_test,
+  `90` = log_reg_90_test,
+  .id  = "perc_homology"
+) %>%
+  mutate(
+    # make sure perc_homology is numeric, not a string
+    perc_homology = as.numeric(perc_homology)
+  )
+```
+
+```{r}
+ggplot(combined_test, aes(x = num_features, y = test_accuracy, color = factor(perc_homology))) +
+  geom_line(size = 0.8) +
+  scale_color_manual(
+    name   = "training/validation\nset homology (%)",
+    values = qualitative_hcl(
+      n       = length(unique(combined$perc_homology)),
+      palette = "Set 2"
+    )
+  ) +
+  labs(
+    x = "Number of Features",
+    y = "Test Accuracy (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+
+```
+#-------------------------------------------------------------------------------------------------------------------------------------------------
+# Results from vanilla nn model
+#-------------------------------------------------------------------------------------------------------------------------------------------------
+
+I plotted the results from the last trained models.
+```{r}
+vanilla_nn_40 <- read.csv(file = "../../data/vanilla_nn_results/nn_results_40_hom.csv")
+vanilla_nn_50 <- read.csv(file = "../../data/vanilla_nn_results/nn_results_50_hom.csv")
+vanilla_nn_60 <- read.csv(file = "../../data/vanilla_nn_results/nn_results_60_hom.csv")
+vanilla_nn_70 <- read.csv(file = "../../data/vanilla_nn_results/nn_results_70_hom.csv")
+vanilla_nn_80 <- read.csv(file = "../../data/vanilla_nn_results/nn_results_80_hom.csv")
+vanilla_nn_90 <- read.csv(file = "../../data/vanilla_nn_results/nn_results_90_hom.csv")
+
+```
+
+
+```{r}
+combined_nn <- bind_rows(
+  `40` = vanilla_nn_40,
+  `50` = vanilla_nn_50,
+  `60` = vanilla_nn_60,
+  `70` = vanilla_nn_70,
+  `80` = vanilla_nn_80,
+  `90` = vanilla_nn_90,
+  .id  = "perc_homology"
+) %>%
+  mutate(
+    # make sure perc_homology is numeric, not a string
+    perc_homology = as.numeric(perc_homology)
+  )
+```
+
+Now let's plot:
+```{r}
+ggplot(combined_nn, aes(x = num_features, y = validation_accuracy, color = factor(perc_homology))) +
+  geom_line(size = 0.8) +
+  scale_color_manual(
+    name   = "training/validation\nset homology (%)",
+    values = qualitative_hcl(
+      n       = length(unique(combined$perc_homology)),
+      palette = "Set 2"
+    )
+  ) +
+  labs(
+    x = "Number of Features",
+    y = "Validation Accuracy (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+
+```
+
+```{r}
+ggplot(combined_nn, aes(x = num_features, y = test_accuracy, color = factor(perc_homology))) +
+  geom_line(size = 0.8) +
+  scale_color_manual(
+    name   = "training/validation\nset homology (%)",
+    values = qualitative_hcl(
+      n       = length(unique(combined$perc_homology)),
+      palette = "Set 2"
+    )
+  ) +
+  labs(
+    x = "Number of Features",
+    y = "Test Accuracy (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+
+
+```
+Now I want to run the "best" model on the known Novo peptides. 
+Let's start with the nn model. I need a script that will take the embeddings, load the model and generate the prediction probabilities for each of these peptides.
+
+```{r}
+# this model is not impressive- skip for now
+```
+
+Now let's look at the log regression model predictions of Novo-familiar peptides:
+```{r}
+log_reg_predictions <- read.csv(file = "../../data/linear_regression_data/example_predictions_logreg_hom90_600_new.csv")
+```
+
+making a plot for each of the 4 Entries:
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+library(ggiraph)
+library(htmltools)
+
+# your predictions data frame
+# columns: Entry, position, residue, probability_cleavage_site
+# assume it's already loaded as `log_reg_predictions`
+
+entries <- c("A0A1B0GTK4", "A0A1B0GVD1", "P01189", "P01275")
+
+plot_labels <- c("A0A1B0GTK4 - FAM237A", "A0A1B0GVD1 - FAM237B", "P01189 - POMC", "P01275 - glucagon")
+
+# build one girafe plot per Entry
+plots <- lapply(entries, function(entry) {
+  df <- log_reg_predictions %>% filter(Entry == entry)
+  
+  p <- ggplot(df, aes(x = position, y = probability_cleavage_site)) +
+    geom_col_interactive(
+      aes(tooltip = paste0(
+        "Residue: ", residue,
+        "\nPos: ", position,
+        "\nProb: ", sprintf("%.2f", probability_cleavage_site)
+      )),
+      fill = "steelblue"
+    ) +
+    scale_x_continuous(
+      breaks = df$position,
+      labels = df$residue,
+      expand = expansion(mult = c(0,0))
+    ) +
+    scale_y_continuous(
+      expand = expansion(mult = c(0,0))
+    ) +
+    labs(
+      title = entry,
+      x     = "",
+      y     = "Prob (cleavage site)"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(vjust = 0.5, size = 5),
+      plot.title  = element_text(hjust = 0.5)
+    )
+  
+  girafe(
+    ggobj      = p,
+    width_svg  = 9.5,
+    height_svg = 2,
+    options = list(
+      opts_hover(css    = "fill:#FF3333;"),
+      opts_tooltip(offx = 10, offy = -10),
+      opts_sizing(rescale = TRUE)
+    )
+  )
+})
+
+# stack them vertically and save to HTML
+page <- tagList(
+  lapply(plots, function(g) {
+    tags$div(style="margin-bottom: 20px;", g)
+  })
+)
+
+save_html(page, file = "../../data/linear_regression_data/predictions_interactive_new.html")
+
+```
+
+
+
+I want to add in the cleavage sites. For this, I downloaded the 4 peptides from uniprot. 
+```{r}
+four_novo_annotations <- read.csv(file = "../../src/bash/uniprot_data.tsv", sep = "\t")
+```
+
+
+Note: get "clean_data_5" in clean_KW-0527.Rmd
+```{r}
+four_novo_annotations <- four_novo_annotations %>%
+  select(Entry, Sequence, Length, Peptide, Signal.peptide) %>%
+  distinct() %>%
+  na.omit(Peptide) 
+```
+
+
+Here is a list of all the peptide starts and ends. 
+```{r}
+four_novo_ann_start_end <- four_novo_annotations %>%
+  # extract all “123..456” substrings as a list-column
+  mutate(range_str = str_extract_all(Peptide, "\\d+\\.\\.\\d+")) %>%
+  # turn each element of that list into its own row
+  unnest_longer(range_str) %>%
+  # split “123..456” into two new columns
+  separate(range_str, into = c("peptide_start","peptide_end"), sep = "\\.\\.") %>%
+  # convert to integer
+  mutate(
+     start = as.integer(peptide_start),
+     end   = as.integer(peptide_end)) %>%
+  select(Entry, Sequence, Length, peptide_start, peptide_end)
+
+```
+
+get Signal sequence info: (where signal starts and ends so that later we can remove cleavage site right after signal)
+```{r}
+signal_info_novo <- four_novo_annotations %>%
+  select(Entry, Signal.peptide) %>%
+  distinct() %>%
+  mutate(range_str = str_extract_all(Signal.peptide, "\\d+\\.\\.\\d+")) %>%
+  unnest_longer(range_str) %>%
+  separate(range_str, into = c("signal_start","signal_end"), sep = "\\.\\.") %>%
+  mutate(
+     start = as.integer(signal_start),
+     end   = as.integer(signal_end)) %>%
+  select(Entry, signal_start, signal_end)
+```
+
+Joining the peptide and signal info dataframes together.
+
+```{r}
+two_pep_novo <- four_novo_ann_start_end %>%
+  left_join(signal_info_novo)
+```
+
+```{r}
+right_after_signal_novo <- two_pep_novo %>%
+  mutate(peptide_after_signal = ifelse(as.numeric(signal_end) + 1 == peptide_start, TRUE, FALSE))
+```  
+  
+Let's see how many peptides are NOT right after the signal:
+```{r}
+right_after_signal_novo %>%
+  filter(peptide_after_signal == FALSE) %>%
+  dplyr::count()
+
+```
+```{r}
+final_cleavage_site_df_novo <- right_after_signal_novo %>%
+  filter(!(peptide_start == 1 & peptide_end == Length)) # filtering out mature peptides
+```
+
+Getting the positive data labels for the cleavage sites
+```{r}
+library(stringr)
+
+positive_labels_novo <- final_cleavage_site_df_novo %>%
+  # for each row, build a list of the 4 flanking positions
+  rowwise() %>%
+    mutate(
+      # build a tiny tibble of flank positions + their labels
+      flank = list(tibble::tibble(
+        residue_number = c(as.numeric(peptide_start) - 2,
+                           as.numeric(peptide_start) - 1,
+                           as.numeric(peptide_end)   + 1,
+                           as.numeric(peptide_end)   + 2),
+        cleavage       = c("cleavage_1",   
+                           "cleavage_1",
+                           "cleavage_2",
+                           "cleavage_2"),
+        cleavage_pos       = c("first\nouter",   
+                           "first\ninner",
+                           "second\ninner",
+                           "second\nouter")
+      ))
+    ) %>%
+    unnest(cols = c(flank)) %>% 
+    # drop any cleavage_1 when start == 1 or after_signal == TRUE
+    filter(!(cleavage == "cleavage_1" & (peptide_start == 1 | peptide_after_signal))) %>%
+    # drop any cleavage_2 when end == Length
+    filter(!(cleavage == "cleavage_2" & peptide_end == Length)) %>%
+    # also drop any positions that fall outside 1…Length
+    filter(residue_number >= 1, residue_number <= Length) %>%
+    # extract the amino acid at each flank position
+    mutate(residue = str_sub(Sequence, residue_number, residue_number))
+    
+positive_labels_novo <- positive_labels_novo %>%
+  select(Entry, Sequence, Length, residue, residue_number) %>%
+  distinct()
+
+positive_labels_novo <- positive_labels_novo %>%
+  select(Entry, residue, residue_number) %>%
+  ungroup() %>%
+  distinct()
+```
+
+```{r}
+library(ggiraph)
+library(htmltools)
+library(dplyr)
+library(ggplot2)
+
+# assumed: log_reg_predictions and positive_labels_novo are already loaded
+
+entries <- c("A0A1B0GTK4", "A0A1B0GVD1", "P01189", "P01275")
+plot_labels <- c("A0A1B0GTK4 - FAM237A", "A0A1B0GVD1 - FAM237B", "P01189 - POMC", "P01275 - glucagon")
+
+# build one girafe plot per Entry
+plots <- lapply(seq_along(entries), function(i) {
+  entry <- entries[i]
+  label <- plot_labels[i]
+
+  df <- log_reg_predictions %>% filter(Entry == entry)
+  highlights <- positive_labels_novo %>%
+    filter(Entry == entry) %>%
+    pull(residue_number)
+
+  p <- ggplot(df, aes(x = position, y = probability_cleavage_site)) +
+    # highlight cleavage sites in neon green
+    geom_vline(
+      xintercept = highlights,
+      color = "#39FF14",          # neon green
+      linewidth = 0.9,            # match blue bar width
+      alpha = 0.9
+    ) +
+    # interactive bars
+    geom_col_interactive(
+      aes(tooltip = paste0(
+        "Residue: ", residue,
+        "\nPos: ", position,
+        "\nProb: ", sprintf("%.2f", probability_cleavage_site)
+      )),
+      fill = "steelblue"
+    ) +
+    scale_x_continuous(
+      breaks = df$position,
+      labels = df$residue,
+      expand = expansion(mult = c(0, 0))
+    ) +
+    scale_y_continuous(
+      expand = expansion(mult = c(0, 0))
+    ) +
+    labs(
+      title = label,
+      x = "",
+      y = "Prob (cleavage site)"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(vjust = 0.5, size = 5),
+      plot.title  = element_text(hjust = 0.5)
+    )
+
+  girafe(
+    ggobj = p,
+    width_svg = 9.5,
+    height_svg = 2,
+    options = list(
+      opts_hover(css = "fill:#FF3333;"),
+      opts_tooltip(offx = 10, offy = -10),
+      opts_sizing(rescale = TRUE)
+    )
+  )
+})
+
+# stack and save as HTML
+page <- tagList(
+  lapply(plots, function(g) {
+    tags$div(style = "margin-bottom: 20px;", g)
+  })
+)
+
+save_html(page, file = "../../data/linear_regression_data/predictions_interactive_new_90_600.html")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,1393 @@
+---
+title: "Figure_1_PCA"
+output: html_document
+date: "2026-01-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+
+# 1) Load averaged embeddings
+emb <- read.csv("../../data/esm2_secretome_embeddings_averaged.csv",
+                check.names = FALSE)
+
+# 2) Load neuropeptide flags (these are the revised ones from Thomas and Helena)
+secr_neuro_flags <- read.csv("../../data/secretome_neuroflags_revised_final.csv")
+
+# Inspect columns to find the flag column name
+names(secr_neuro_flags)
+
+```
+
+```{r}
+flag_col <- "neuropeptide"   # <- change if your flag column has a different name
+
+# 3) Join embeddings with neuropeptide labels
+df <- emb %>%
+  inner_join(secr_neuro_flags, by = "Entry")
+
+# All embedding columns (those starting with "e_")
+emb_cols <- grep("^e_", names(df), value = TRUE)
+length(emb_cols)  # should be 1280
+nrow(df)
+```
+
+
+```{r}
+# 4) PCA on the embedding features
+pca <- prcomp(df[, emb_cols], scale. = TRUE)
+
+# 5) Build a data frame with PC1/PC2 and labels
+scores_esm_average <- as_tibble(pca$x[, 1:2]) %>%
+  mutate(
+    Entry = df$Entry,
+    is_neuropeptide = df[[flag_col]]
+  )
+
+head(scores_esm_average)
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+scores_esm_average <- scores_esm_average %>%
+  mutate(
+    type = if_else(is_neuropeptide, "Neuropeptide", "Non-neuropeptide"),
+    type = factor(type, levels = c("Non-neuropeptide", "Neuropeptide"))
+  )
+
+esm_average_plot <- ggplot() +
+  # Invisible layer just to force legend creation
+  geom_point(
+    data = scores_esm_average,
+    aes(x = PC1, y = PC2, fill = type),
+    alpha = 0,
+    shape = 21,
+    show.legend = TRUE
+  ) +
+  geom_point(
+    data = filter(scores_esm_average, type == "Non-neuropeptide"),
+    aes(x = PC1, y = PC2, fill = type),
+    color = "#062c5e",
+    shape = 21,
+    alpha = 0.4,
+    size = 2,
+    stroke = 0.5
+  ) +
+  geom_point(
+    data = filter(scores_esm_average, type == "Neuropeptide"),
+    aes(x = PC1, y = PC2, fill = type),
+    color = "#ff5e00",
+    shape = 21,
+    alpha = 0.9,
+    size = 2,
+    stroke = 0.5
+  ) +
+  scale_fill_manual(
+    name   = "",
+    values = c(
+      "Non-neuropeptide" = "#477aad",
+      "Neuropeptide"     = "#ffb145"
+    )
+  ) +
+  guides(fill = guide_legend()) +   # ← THIS FIXES IT
+  theme_cowplot() +
+  labs(
+    x = "PC1",
+    y = "PC2"
+  ) +
+  theme(legend.position = "top")
+
+
+esm_average_plot
+
+
+```
+Testing legend:
+```{r}
+esm_average_plot$guides
+
+```
+
+
+#==================================================================================================
+# Now we are plotting the ESM2 embeddings (maxpooled embeddings)
+#==================================================================================================
+
+```{r}
+library(tidyverse)
+
+# 1) Load averaged embeddings
+emb <- read.csv("../../data/esm2_secretome_embeddings_maxpooled.csv",
+                check.names = FALSE)
+
+# 2) Load neuropeptide flags (these are the revised ones from Thomas and Helena)
+secr_neuro_flags <- read.csv("../../data/secretome_neuroflags_revised_final.csv")
+
+# Inspect columns to find the flag column name
+names(secr_neuro_flags)
+
+```
+
+```{r}
+flag_col <- "neuropeptide"   # <- change if your flag column has a different name
+
+# 3) Join embeddings with neuropeptide labels
+df <- emb %>%
+  inner_join(secr_neuro_flags, by = "Entry")
+
+# All embedding columns (those starting with "e_")
+emb_cols <- grep("^e_", names(df), value = TRUE)
+length(emb_cols)  # should be 1280
+nrow(df)
+
+```
+
+
+```{r}
+# 4) PCA on the embedding features
+pca <- prcomp(df[, emb_cols], scale. = TRUE)
+
+# 5) Build a data frame with PC1/PC2 and labels
+scores_esm_maxpool <- as_tibble(pca$x[, 1:2]) %>%
+  mutate(
+    Entry = df$Entry,
+    is_neuropeptide = df[[flag_col]]
+  )
+
+head(scores_esm_maxpool)
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+scores_esm_maxpool <- scores_esm_maxpool %>%
+  mutate(
+    type = if_else(is_neuropeptide, "Neuropeptide", "Non-neuropeptide"),
+    type = factor(type, levels = c("Non-neuropeptide", "Neuropeptide"))
+  )
+
+esm_maxpool_plot <- ggplot() +
+  # Non-neuropeptides: blue fill, black outline, under
+  geom_point(
+    data = filter(scores_esm_maxpool, type == "Non-neuropeptide"),
+    aes(x = PC1, y = PC2, fill = type),
+    color = "#062c5e",          # outline color
+    shape = 21,               # filled circle with border
+    alpha = 0.4,
+    size = 2,
+    stroke = 0.5
+  ) +
+  # Neuropeptides: orange fill, black outline, on top
+  geom_point(
+    data = filter(scores_esm_maxpool, type == "Neuropeptide"),
+    aes(x = PC1, y = PC2, fill = type),
+    color = "#ff5e00",          # outline color
+    shape = 21,
+    alpha = 0.9,
+    size = 2,
+    stroke = 0.5              # outline thickness
+  ) +
+  scale_fill_manual(
+    name   = "",
+    values = c("Non-neuropeptide" = "#477aad",
+               "Neuropeptide"     = "#ffb145")
+  ) +
+  theme_cowplot() +
+  labs(
+    x = "PC1",
+    y = "PC2"
+  ) 
+
+```
+
+
+#==================================================================================================
+# Now we are plotting the SAE embeddings (averaged embeddings)
+#==================================================================================================
+
+```{r setup-pca, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tibble)
+
+# 1) Load averaged SAE embeddings
+sae_emb <- read.csv(
+  "../../data/sae_layer18_secretome_embeddings_averaged_1201.csv",
+  check.names = FALSE
+)
+
+dim(sae_emb)  # sanity check: ~1201 x 10241
+
+# 2) Load neuropeptide flags (these are the revised ones from Thomas and Helena)
+secr_neuro_flags <- read.csv("../../data/secretome_neuroflags_revised_final.csv")
+names(secr_neuro_flags)  # check column names
+
+```
+
+
+```{r join-flags}
+flag_col <- "neuropeptide"  # adjust if needed
+
+# 3) Join embeddings with neuropeptide labels
+df <- sae_emb %>%
+  inner_join(secr_neuro_flags, by = "Entry")
+
+# 4) Embedding columns: all starting with "e_"
+emb_cols <- grep("^e_", names(df), value = TRUE)
+length(emb_cols)  # should be 10240
+nrow(df)
+
+```
+
+
+```{r pca-sae}
+# 5) PCA on SAE embeddings
+
+# Compute SD for each embedding column
+emb_matrix <- as.matrix(df[, emb_cols])
+sds <- apply(emb_matrix, 2, sd)
+
+# Keep only non-constant columns
+non_const_cols <- emb_cols[sds > 0]
+length(non_const_cols)  # should be slightly less than 10240
+
+# Optionally inspect how many were dropped
+cat("Dropped", sum(sds == 0), "constant columns\n")
+
+# Run PCA on filtered matrix
+pca_sae <- prcomp(df[, non_const_cols], scale. = TRUE)
+
+# Variance explained
+var_explained <- (pca_sae$sdev^2) / sum(pca_sae$sdev^2)
+pc1_var <- round(var_explained[1] * 100, 1)
+pc2_var <- round(var_explained[2] * 100, 1)
+
+# 6) Build scores data frame with PC1/PC2 and labels
+scores_sae_average <- as_tibble(pca_sae$x[, 1:2]) %>%
+  mutate(
+    Entry = df$Entry,
+    is_neuropeptide = df[[flag_col]]
+  )
+
+colnames(scores_sae_average)[1:2] <- c("PC1", "PC2")
+
+head(scores_sae_average)
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+scores_sae_average <- scores_sae_average %>%
+  mutate(
+    type = if_else(is_neuropeptide, "Neuropeptide", "Non-neuropeptide"),
+    type = factor(type, levels = c("Non-neuropeptide", "Neuropeptide"))
+  )
+
+sae_average_plot <- ggplot() +
+  # Non-neuropeptides: blue fill, dark blue outline, under
+  geom_point(
+    data = dplyr::filter(scores_sae_average, type == "Non-neuropeptide"),
+    aes(x = PC1, y = PC2, fill = type),
+    color = "#062c5e",          # outline color
+    shape = 21,                 # filled circle with border
+    alpha = 0.4,
+    size = 2,
+    stroke = 0.5
+  ) +
+  # Neuropeptides: orange fill, orange outline, on top
+  geom_point(
+    data = dplyr::filter(scores_sae_average, type == "Neuropeptide"),
+    aes(x = PC1, y = PC2, fill = type),
+    color = "#ff5e00",          # outline color
+    shape = 21,
+    alpha = 0.9,
+    size = 2,
+    stroke = 0.5               # outline thickness
+  ) +
+  scale_fill_manual(
+    name   = "",
+    values = c("Non-neuropeptide" = "#477aad",
+               "Neuropeptide"     = "#ffb145")
+  ) +
+  theme_cowplot() +
+  labs(
+    x = "PC1",
+    y = "PC2"
+  ) 
+sae_average_plot
+```
+#===================================================================================
+# Now let's plot SAE embeddings (maxpooled). instead of averaged
+#===================================================================================
+
+```{r setup-pca, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tibble)
+
+# 1) Load averaged SAE embeddings
+sae_emb <- read.csv(
+  "../../data/sae_layer18_secretome_embeddings_maxpooled_1201.csv",
+  check.names = FALSE
+)
+
+dim(sae_emb)  # sanity check: ~1201 x 10241
+
+# 2) Load neuropeptide flags (these are the revised ones from Thomas and Helena)
+secr_neuro_flags <- read.csv("../../data/secretome_neuroflags_revised_final.csv")
+names(secr_neuro_flags)  # check column names
+
+```
+
+
+```{r join-flags}
+flag_col <- "neuropeptide"  # adjust if needed
+
+# 3) Join embeddings with neuropeptide labels
+df <- sae_emb %>%
+  inner_join(secr_neuro_flags, by = "Entry")
+
+# 4) Embedding columns: all starting with "e_"
+emb_cols <- grep("^e_", names(df), value = TRUE)
+length(emb_cols)  # should be 10240
+nrow(df)
+```
+
+
+```{r pca-sae}
+# 5) PCA on SAE embeddings
+
+# Compute SD for each embedding column
+emb_matrix <- as.matrix(df[, emb_cols])
+sds <- apply(emb_matrix, 2, sd)
+
+# Keep only non-constant columns
+non_const_cols <- emb_cols[sds > 0]
+length(non_const_cols)  # should be slightly less than 10240
+
+# Optionally inspect how many were dropped
+cat("Dropped", sum(sds == 0), "constant columns\n")
+
+# Run PCA on filtered matrix
+pca_sae <- prcomp(df[, non_const_cols], scale. = TRUE)
+
+# Variance explained
+var_explained <- (pca_sae$sdev^2) / sum(pca_sae$sdev^2)
+pc1_var <- round(var_explained[1] * 100, 1)
+pc2_var <- round(var_explained[2] * 100, 1)
+
+# 6) Build scores data frame with PC1/PC2 and labels
+scores_sae_maxpool <- as_tibble(pca_sae$x[, 1:2]) %>%
+  mutate(
+    Entry = df$Entry,
+    is_neuropeptide = df[[flag_col]]
+  )
+
+colnames(scores_sae_maxpool)[1:2] <- c("PC1", "PC2")
+
+head(scores)
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+scores_sae_maxpool <- scores_sae_maxpool %>%
+  mutate(
+    type = if_else(is_neuropeptide, "Neuropeptide", "Non-neuropeptide"),
+    type = factor(type, levels = c("Non-neuropeptide", "Neuropeptide"))
+  )
+
+sae_maxpool_plot <- ggplot() +
+  # Non-neuropeptides: blue fill, dark blue outline, under
+  geom_point(
+    data = dplyr::filter(scores_sae_maxpool, type == "Non-neuropeptide"),
+    aes(x = PC1, y = PC2, fill = type),
+    color = "#062c5e",          # outline color
+    shape = 21,                 # filled circle with border
+    alpha = 0.4,
+    size = 2,
+    stroke = 0.5
+  ) +
+  # Neuropeptides: orange fill, orange outline, on top
+  geom_point(
+    data = dplyr::filter(scores_sae_maxpool, type == "Neuropeptide"),
+    aes(x = PC1, y = PC2, fill = type),
+    color = "#ff5e00",          # outline color
+    shape = 21,
+    alpha = 0.9,
+    size = 2,
+    stroke = 0.5               # outline thickness
+  ) +
+  scale_fill_manual(
+    name   = "",
+    values = c("Non-neuropeptide" = "#477aad",
+               "Neuropeptide"     = "#ffb145")
+  ) +
+  theme_cowplot() +
+  labs(
+    x = "PC1",
+    y = "PC2"
+  ) 
+sae_maxpool_plot
+```
+#=======================================================================================
+# Let's now find the distances between the centroids
+#=======================================================================================
+```{r}
+library(dplyr)
+
+centroid_distance <- function(scores_df) {
+  # Compute centroids
+  centroids <- scores_df %>%
+    group_by(type) %>%
+    summarise(
+      PC1 = mean(PC1),
+      PC2 = mean(PC2),
+      .groups = "drop"
+    )
+
+  # Extract centroids
+  c_np  <- centroids %>% filter(type == "Neuropeptide")
+  c_non <- centroids %>% filter(type == "Non-neuropeptide")
+
+  # Euclidean distance between centroids
+  dist <- sqrt(
+    (c_np$PC1 - c_non$PC1)^2 +
+    (c_np$PC2 - c_non$PC2)^2
+  )
+
+  list(
+    centroids = centroids,
+    distance  = dist
+  )
+}
+```
+
+Applying to SAE maxpool PCA
+```{r}
+esm_centroid <- centroid_distance(scores_sae_maxpool)
+
+esm_centroid$centroids
+esm_centroid$distance
+```
+```{r}
+esm_centroid <- centroid_distance(scores_esm_average)
+
+esm_centroid$centroids
+esm_centroid$distance
+```
+```{r}
+esm_centroid <- centroid_distance(scores_sae_average)
+
+esm_centroid$centroids
+esm_centroid$distance
+```
+
+```{r}
+esm_centroid <- centroid_distance(scores_esm_maxpool)
+
+esm_centroid$centroids
+esm_centroid$distance
+```
+Helper Function for the silhouette scores:
+```{r}
+library(cluster)
+library(dplyr)
+
+silhouette_pc12 <- function(scores_df) {
+  # Ensure correct ordering
+  scores_df <- scores_df %>%
+    filter(!is.na(PC1), !is.na(PC2), !is.na(type))
+
+  # Encode class labels as integers
+  labels <- as.integer(factor(scores_df$type))
+
+  # Distance matrix in PC1–PC2 space
+  dmat <- dist(scores_df[, c("PC1", "PC2")])
+
+  # Compute silhouette
+  sil <- silhouette(labels, dmat)
+
+  # Return mean silhouette score
+  mean(sil[, "sil_width"])
+}
+```
+
+Calculating silhouette scores:
+```{r}
+sil_results <- tibble(
+  Model   = c("ESM-2", "ESM-2", "SAE", "SAE"),
+  Pooling = c("Mean", "Max", "Mean", "Max"),
+  Silhouette_PC1_PC2 = c(
+    silhouette_pc12(scores_esm_average),
+    silhouette_pc12(scores_esm_maxpool),
+    silhouette_pc12(scores_sae_average),
+    silhouette_pc12(scores_sae_maxpool)
+  )
+)
+
+sil_results
+```
+
+
+
+
+#===================================================
+# Final compound PCA plot:
+#===================================================
+
+
+```{r}
+legend_source <- ggplot(
+  scores_esm_average,
+  aes(x = PC1, y = PC2, fill = type)
+) +
+  geom_point(shape = 21, size = 3) +
+  scale_fill_manual(
+    name = "",
+    values = c(
+      "Non-neuropeptide" = "#477aad",
+      "Neuropeptide"     = "#ffb145"
+    )
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "right"
+  ) +
+  guides(fill = guide_legend(nrow = 1))   # ← forces horizontal layout
+
+legend <- cowplot::get_legend(legend_source)
+legend
+
+
+
+```
+
+```{r}
+library(cowplot)
+
+panel_grid <- plot_grid(
+  esm_average_plot + theme(legend.position = "none"),
+  esm_maxpool_plot + theme(legend.position = "none"),
+  sae_average_plot + theme(legend.position = "none"),
+  sae_maxpool_plot + theme(legend.position = "none"),
+  ncol = 2,
+  labels = c("a.", "b.", "c.", "d.")
+)
+
+final_figure <- plot_grid(
+  legend,
+  panel_grid,
+  ncol = 1,
+  rel_heights = c(0.2, 1)
+)
+
+final_figure
+```
+
+
+```{r}
+library(ggplot2)
+ggsave(
+  filename = "../../figures/paper_figures/Figure_1_final_PCA.png",
+  plot = final_figure,
+  width = 7,
+  height = 7,
+  dpi = 400
+)
+```
+
+
+
+
+#------------------end of figure 1----------------------------------
+
+
+
+Now, I am making the PCA of the 320 top features for the maxpooled SAE embeddings: (FINAL VERSION FOR PAPER)
+```{r setup-pca, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tibble)
+library(readr)
+
+# 1) Load max-pooled SAE embeddings
+sae_emb <- read.csv(
+  "../../data/sae_layer18_secretome_embeddings_maxpooled_1201.csv",
+  check.names = FALSE
+)
+
+dim(sae_emb)  # e.g., ~1201 x 10241 (Entry + 10240 features)
+
+# 2) Load neuropeptide flags (revised)
+secr_neuro_flags <- read.csv("../../data/secretome_neuroflags_revised_final.csv")
+names(secr_neuro_flags)
+
+# Column in secr_neuro_flags that indicates neuropeptide
+flag_col <- "neuropeptide"  # adjust if needed
+```
+
+```{r}
+# 3) Join embeddings with neuropeptide labels
+df <- sae_emb %>%
+  inner_join(secr_neuro_flags, by = "Entry")
+
+# 4) Embedding columns: all starting with "e_"
+emb_cols <- grep("^e_", names(df), value = TRUE)
+
+length(emb_cols)  # should be 10240
+nrow(df)          # e.g., 562
+
+# Make sure the flag column is logical
+# (works if it's TRUE/FALSE, 0/1, "0"/"1", "TRUE"/"FALSE")
+df[[flag_col]] <- as.logical(as.integer(as.character(df[[flag_col]])) %||%
+                              ifelse(as.character(df[[flag_col]]) %in% c("TRUE","True","true"), 1, 0))
+```
+
+```{r}
+rank_df <- read_csv(
+  "/Volumes/T7 Shield/layer_18_F1_scores/winning_thresholds_l18.csv",
+  show_col_types = FALSE
+)
+
+names(rank_df)
+
+# Rank by winning_F1_score (highest first), take top 320
+top_features <- rank_df %>%
+  arrange(desc(winning_F1_score)) %>%
+  slice_head(n = 320)
+
+# 'feature' is a numeric index (1..10240)
+top_indices <- as.integer(top_features$feature)
+
+length(top_indices)
+head(top_indices)
+```
+
+```{r}
+# Sanity check: indices are within range
+if (max(top_indices) > length(emb_cols) || min(top_indices) < 1) {
+  stop("Some feature indices are out of range of embedding columns.")
+}
+
+# Map indices to column names
+top_feats_in_df <- emb_cols[top_indices]
+
+length(top_feats_in_df)  # should be 320
+head(top_feats_in_df)
+
+```
+
+```{r}
+# Matrix of just the selected top features
+emb_matrix_top <- as.matrix(df[, top_feats_in_df, drop = FALSE])
+
+# Drop zero-variance columns
+sds_top <- apply(emb_matrix_top, 2, sd, na.rm = TRUE)
+non_const_cols_top <- colnames(emb_matrix_top)[sds_top > 0]
+
+cat("Dropped", sum(sds_top == 0), "constant columns among top features\n")
+
+if (length(non_const_cols_top) < 2) {
+  stop("Fewer than 2 non-constant columns remain; PCA cannot be computed.")
+}
+
+# PCA on selected, non-constant features
+pca_sae_top <- prcomp(emb_matrix_top[, non_const_cols_top, drop = FALSE], scale. = TRUE)
+
+# Variance explained
+var_explained_top <- (pca_sae_top$sdev^2) / sum(pca_sae_top$sdev^2)
+pc1_var_top <- round(var_explained_top[1] * 100, 1)
+pc2_var_top <- round(var_explained_top[2] * 100, 1)
+
+# Build scores with PC1 & PC2 and labels
+scores_top <- as_tibble(pca_sae_top$x[, 1:2, drop = FALSE]) %>%
+  mutate(
+    Entry = df$Entry,
+    is_neuropeptide = df[[flag_col]]
+  )
+
+colnames(scores_top)[1:2] <- c("PC1", "PC2")
+
+head(scores_top)
+```
+
+```{r}
+scores_top <- scores_top %>%
+  mutate(
+    type = if_else(is_neuropeptide, "Neuropeptide", "Non-neuropeptide"),
+    type = factor(type, levels = c("Non-neuropeptide", "Neuropeptide"))
+  )
+
+ggplot() +
+  # Non-neuropeptides: blue fill, dark blue outline, under
+  geom_point(
+    data = dplyr::filter(scores_top, type == "Non-neuropeptide"),
+    aes(x = PC1, y = PC2, fill = type),
+    color = "#062c5e",
+    shape = 21,
+    alpha = 0.4,
+    size = 2,
+    stroke = 0.5
+  ) +
+  # Neuropeptides: orange fill, orange outline, on top
+  geom_point(
+    data = dplyr::filter(scores_top, type == "Neuropeptide"),
+    aes(x = PC1, y = PC2, fill = type),
+    color = "#ff5e00",
+    shape = 21,
+    alpha = 0.9,
+    size = 2,
+    stroke = 0.5
+  ) +
+  scale_fill_manual(
+    name   = "",
+    values = c("Non-neuropeptide" = "#477aad",
+               "Neuropeptide"     = "#ffb145")
+  ) +
+  theme_cowplot() +
+  labs(
+    x = paste0("PC1 (", pc1_var_top, "%)"),
+    y = paste0("PC2 (", pc2_var_top, "%)"),
+    title = "SAE embeddings (top 320 features)"
+  )
+```
+
+Looking at the centroid and silhouette scores:
+```{r metrics-sae-top320, message=FALSE, warning=FALSE}
+library(cluster)
+library(dplyr)
+
+# Ensure labels are clean
+scores_top <- scores_top %>%
+  mutate(
+    is_neuropeptide = as.logical(is_neuropeptide),
+    type = if_else(is_neuropeptide, "Neuropeptide", "Non-neuropeptide"),
+    type = factor(type, levels = c("Non-neuropeptide", "Neuropeptide"))
+  )
+
+# --- Centroid distance in PC1–PC2 ---
+centroids_top <- scores_top %>%
+  group_by(type) %>%
+  summarise(
+    c1 = mean(PC1, na.rm = TRUE),
+    c2 = mean(PC2, na.rm = TRUE),
+    n  = dplyr::n(),
+    .groups = "drop"
+  )
+
+# sanity check: should have exactly 2 groups
+if (nrow(centroids_top) != 2) {
+  stop("Expected exactly two groups for centroid calculation. Check neuropeptide labels.")
+}
+
+centroid_distance_top <- sqrt(
+  (centroids_top$c1[1] - centroids_top$c1[2])^2 +
+  (centroids_top$c2[1] - centroids_top$c2[2])^2
+)
+
+cat("Group sizes:\n")
+print(centroids_top %>% select(type, n))
+cat("\nCentroids:\n")
+print(centroids_top %>% select(type, c1, c2))
+cat("\nCentroid distance (PC1–PC2):", round(centroid_distance_top, 5), "\n")
+
+# --- Silhouette score in PC1–PC2 ---
+pc_mat_top <- as.matrix(scores_top[, c("PC1", "PC2")])
+
+# cluster::silhouette expects integer cluster labels
+cluster_labels_top <- as.integer(scores_top$type)  # 1/2
+
+# Need at least 2 points per group to compute silhouette meaningfully
+tab <- table(cluster_labels_top)
+if (any(tab < 2)) {
+  warning("One of the groups has <2 points; silhouette may be undefined or uninformative.")
+}
+
+sil_obj_top <- silhouette(cluster_labels_top, dist(pc_mat_top))
+sil_mean_top <- mean(sil_obj_top[, "sil_width"])
+
+cat("Mean silhouette (PC1–PC2):", round(sil_mean_top, 8), "\n")
+
+```
+This results is a little depressing. Let's explore other PCs
+
+```{r silhouette-more-pcs, message=FALSE, warning=FALSE}
+library(cluster)
+
+# labels: 1/2
+cluster_labels <- as.integer(scores_top$type)
+
+sil_for_k <- function(k) {
+  pcs <- as.matrix(pca_sae_top$x[, 1:k, drop = FALSE])
+  mean(silhouette(cluster_labels, dist(pcs))[, "sil_width"])
+}
+
+ks <- c(2, 5, 10, 20, 50, 100, 200, min(320, ncol(pca_sae_top$x)))
+sil_vals <- sapply(ks, sil_for_k)
+
+data.frame(k_PCs = ks, mean_silhouette = sil_vals)
+
+```
+
+Let's look at the global centroid distance. 
+```{r centroid-distance-320d-tidyverse, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+# Top-feature matrix (non-constant only), standardized
+Xz <- emb_matrix_top %>%
+  as_tibble() %>%
+  select(all_of(non_const_cols_top)) %>%
+  mutate(across(everything(), scale)) %>%
+  mutate(is_neuropeptide = as.logical(df[[flag_col]]))
+
+# Centroids (means) in standardized feature space
+centroids_320d <- Xz %>%
+  group_by(is_neuropeptide) %>%
+  summarise(across(all_of(non_const_cols_top), ~ mean(.x, na.rm = TRUE)), .groups = "drop")
+
+# Ensure we have exactly two groups
+stopifnot(nrow(centroids_320d) == 2)
+
+# Euclidean distance between centroids
+centroid_dist_320d <- centroids_320d %>%
+  select(-is_neuropeptide) %>%
+  as.matrix() %>%
+  { .[1, ] - .[2, ] } %>%
+  { sqrt(sum(.^2)) }
+
+centroids_320d %>%
+  mutate(group = if_else(is_neuropeptide, "Neuropeptide", "Non-neuropeptide")) %>%
+  select(group, everything())
+
+cat("Centroid distance in standardized", length(non_const_cols_top), "D space:",
+    round(centroid_dist_320d, 5), "\n")
+
+```
+
+```{r centroid-distance-320d-raw-tidyverse, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+# Same as above but WITHOUT standardization (often less interpretable)
+Xraw <- emb_matrix_top %>%
+  as_tibble() %>%
+  select(all_of(non_const_cols_top)) %>%
+  mutate(is_neuropeptide = as.logical(df[[flag_col]]))
+
+centroids_raw <- Xraw %>%
+  group_by(is_neuropeptide) %>%
+  summarise(across(all_of(non_const_cols_top), ~ mean(.x, na.rm = TRUE)), .groups = "drop")
+
+stopifnot(nrow(centroids_raw) == 2)
+
+centroid_dist_raw <- centroids_raw %>%
+  select(-is_neuropeptide) %>%
+  as.matrix() %>%
+  { .[1, ] - .[2, ] } %>%
+  { sqrt(sum(.^2)) }
+
+cat("Centroid distance in raw", length(non_const_cols_top), "D space:",
+    round(centroid_dist_raw, 5), "\n")
+
+```
+
+
+
+
+#----------------- end of top 320 feaures PCA figure---------------------------------
+
+
+
+
+
+
+```{r sae-layer18-density-plot, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(cowplot)  # for theme_cowplot, optional but matches your style
+
+scores <- scores %>%
+  mutate(
+    type = if_else(is_neuropeptide, "Neuropeptide", "Non-neuropeptide"),
+    type = factor(type, levels = c("Non-neuropeptide", "Neuropeptide"))
+  )
+
+# Background = non-neuropeptides, foreground = neuropeptides
+nonneu_data <- dplyr::filter(scores, type == "Non-neuropeptide")
+neuro_data  <- dplyr::filter(scores, type == "Neuropeptide")
+
+# Sizes for legend
+sizes <- c("Non-neuropeptide" = 1,
+           "Neuropeptide"     = 2)
+
+ggplot() +
+  # Light background points for non-neuropeptides
+  geom_point(
+    data = nonneu_data,
+    aes(PC1, PC2, size = "Non-neuropeptide"),
+    color = "#CAD8EF",
+    stroke = 0.2
+  ) +
+  # 2D density polygons for non-neuropeptides
+  stat_density_2d(
+    data = nonneu_data,
+    aes(PC1, PC2, fill = factor(after_stat(level))),
+    geom     = "polygon",
+    contour  = TRUE,
+    bins     = 10,
+    key_glyph = "blank"
+  ) +
+  # Neuropeptides as highlighted points on top
+  geom_point(
+    data = neuro_data,
+    aes(PC1, PC2, size = "Neuropeptide"),
+    shape = 21,
+    color = "#70685d",
+    fill  = "#ffb22e",
+    stroke = 0.25
+  ) +
+  # Density fill palette (no legend for fill)
+  scale_fill_manual(
+    values = c(
+      '#BACAE7', '#ACBCD8', '#A2B1CD', '#93A1BC', '#8494AF',
+      '#7787A1', '#6A7B95', '#60708A', '#52647F', '#3C597E'
+    ),
+    guide = "none"
+  ) +
+  # Size legend only for the two groups
+  scale_size_manual(values = sizes) +
+  guides(
+    size = guide_legend(
+      override.aes = list(
+        fill  = c("#CAD8EF", "#ffb22e"),
+        color = c("#8aa4ba", "#70685d")
+      )
+    )
+  ) +
+  scale_x_continuous(name = "PC1") +
+  scale_y_continuous(name = "PC2") +
+  labs(
+    size  = "",
+    title = "SAE embeddings (layer 18 model)"
+  ) +
+  theme_cowplot(16) +
+  theme(
+    legend.position = c(0.8, 0.2)
+  )
+```
+
+Neuropeptides basically live in the same region of SAE space as the majority of the secretome.
+They’re a small, slightly shifted cloud inside a larger blob, not a totally separate island.
+
+#=====================================================================================================
+# read ranking file and make PCA with top 320 features 
+#=====================================================================================================
+
+```{r select-top-features, message=FALSE}
+library(dplyr)
+library(readr)
+
+rank_df <- read_csv("/Volumes/T7 Shield/layer_18_F1_scores/winning_thresholds_l18.csv",
+                    show_col_types = FALSE)
+
+names(rank_df)
+
+# Rank by winning_F1_score (highest first), take top 320
+top_features <- rank_df %>%
+  arrange(desc(winning_F1_score)) %>%
+  slice_head(n = 320)
+
+# 'feature' is a numeric index (1..10240)
+top_indices <- as.integer(top_features$feature)
+length(top_indices)
+head(top_indices)
+
+```
+
+
+```{r align-top-features}
+# Sanity check: indices are within range
+range(top_indices)
+length(emb_cols)
+
+if (max(top_indices) > length(emb_cols) || min(top_indices) < 1) {
+  stop("Some feature indices are out of range of embedding columns.")
+}
+
+# Map indices to column names
+top_feats_in_df <- emb_cols[top_indices]
+
+length(top_feats_in_df)  # should be 320
+head(top_feats_in_df)
+```
+```{r pca-sae-top320}
+# Matrix of just the selected top features
+emb_matrix_top <- as.matrix(df[, top_feats_in_df])
+
+# Drop zero-variance columns
+sds_top <- apply(emb_matrix_top, 2, sd)
+non_const_cols_top <- top_feats_in_df[sds_top > 0]
+
+cat("Dropped", sum(sds_top == 0), "constant columns among top features\n")
+
+# PCA on selected, non-constant features
+pca_sae_top <- prcomp(df[, non_const_cols_top], scale. = TRUE)
+
+# Variance explained
+var_explained_top <- (pca_sae_top$sdev^2) / sum(pca_sae_top$sdev^2)
+pc1_var_top <- round(var_explained_top[1] * 100, 1)
+pc2_var_top <- round(var_explained_top[2] * 100, 1)
+
+# Build scores with PC1 & PC2 and labels
+scores_top <- as_tibble(pca_sae_top$x[, 1:2]) %>%
+  mutate(
+    Entry = df$Entry,
+    is_neuropeptide = df[[flag_col]]
+  )
+
+colnames(scores_top)[1:2] <- c("PC1", "PC2")
+
+head(scores_top)
+```
+
+
+---
+
+## Plot PC1 vs PC2 using the top-320 PCA
+
+```{r plot-sae-pca-top320}
+scores_top <- scores_top %>%
+  mutate(
+    type = if_else(is_neuropeptide, "Neuropeptide", "Non-neuropeptide"),
+    type = factor(type, levels = c("Non-neuropeptide", "Neuropeptide"))
+  )
+
+ggplot() +
+  # Non-neuropeptides: blue fill, dark blue outline, under
+  geom_point(
+    data = dplyr::filter(scores_top, type == "Non-neuropeptide"),
+    aes(x = PC1, y = PC2, fill = type),
+    color = "#062c5e",          # outline color
+    shape = 21,                 # filled circle with border
+    alpha = 0.4,
+    size = 2,
+    stroke = 0.5
+  ) +
+  # Neuropeptides: orange fill, orange outline, on top
+  geom_point(
+    data = dplyr::filter(scores_top, type == "Neuropeptide"),
+    aes(x = PC1, y = PC2, fill = type),
+    color = "#ff5e00",          # outline color
+    shape = 21,
+    alpha = 0.9,
+    size = 2,
+    stroke = 0.5
+  ) +
+  scale_fill_manual(
+    name   = "",
+    values = c("Non-neuropeptide" = "#477aad",
+               "Neuropeptide"     = "#ffb145")
+  ) +
+  theme_minimal() +
+  labs(
+    x = paste0("PC1 (", pc1_var_top, "%)"),
+    y = paste0("PC2 (", pc2_var_top, "%)"),
+    title = "SAE embeddings (top 320 features)"
+  )
+```
+
+```{r sae-pca-density-plot, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(cowplot)  # for theme_cowplot
+
+# Starting from scores_top (PC1, PC2, is_neuropeptide)
+scores_top <- scores_top %>%
+  mutate(
+    type = if_else(is_neuropeptide, "Neuropeptide", "Non-neuropeptide"),
+    type = factor(type, levels = c("Non-neuropeptide", "Neuropeptide"))
+  )
+
+# Split into background (non-neuropeptide) and foreground (neuropeptide)
+nonneu_data <- filter(scores_top, type == "Non-neuropeptide")
+neuro_data  <- filter(scores_top, type == "Neuropeptide")
+
+# Sizes for legend
+sizes <- c("Non-neuropeptide" = 1,
+           "Neuropeptide"     = 2)
+
+p_sae_density <- ggplot() +
+  # Light background points for non-neuropeptides
+  geom_point(
+    data = nonneu_data,
+    aes(PC1, PC2, size = "Non-neuropeptide"),
+    color = "#CAD8EF",
+    stroke = 0.2
+  ) +
+  # 2D density polygons ("2D histogram" style) for non-neuropeptides
+  stat_density_2d(
+    data = nonneu_data,
+    aes(PC1, PC2, fill = factor(after_stat(level))),
+    geom     = "polygon",
+    contour  = TRUE,
+    bins     = 10,
+    key_glyph = "blank"
+  ) +
+  # Neuropeptides as highlighted points on top
+  geom_point(
+    data = neuro_data,
+    aes(PC1, PC2, size = "Neuropeptide"),
+    shape = 21,
+    color = "#70685d",
+    fill  = "#ffb22e",
+    stroke = 0.25
+  ) +
+  # Custom fill scale for the density levels (no legend for fill)
+  scale_fill_manual(
+    values = c(
+      '#BACAE7', '#ACBCD8', '#A2B1CD', '#93A1BC', '#8494AF',
+      '#7787A1', '#6A7B95', '#60708A', '#52647F', '#3C597E'
+    ),
+    guide = "none"
+  ) +
+  # Sizes for legend
+  scale_size_manual(values = sizes) +
+  guides(
+    size = guide_legend(
+      override.aes = list(
+        fill  = c("#CAD8EF", "#ffb22e"),
+        color = c("#8aa4ba", "#70685d")
+      )
+    )
+  ) +
+  scale_x_continuous(name = "PC1") +
+  scale_y_continuous(name = "PC2") +
+  labs(size = "", title = "SAE embeddings (top 320 features)") +
+  theme_cowplot(16) +
+  theme(
+    legend.position = "none"
+  )
+
+p_sae_density
+```
+Neuropeptides basically live in the same region of SAE space as the majority of the secretome.
+They’re a small, slightly shifted cloud inside a larger blob, not a totally separate island.
+
+```{r}
+embedding_cols <- grep("^e_", names(df), value = TRUE)
+length(embedding_cols)      # how many embedding columns?
+head(embedding_cols)        # first few
+tail(embedding_cols)        # last few
+
+```
+
+
+# which PC is aligned with the label? 
+```{r}
+# scores_top from your PCA on top 320 features
+label_num <- as.numeric(scores_top$is_neuropeptide)  # 0/1
+
+cors <- apply(pca_sae_top$x, 2, function(pc) cor(pc, label_num))
+head(sort(cors^2, decreasing = TRUE))
+```
+
+
+```{r}
+# cors: correlation of each PC with the label_num
+# rank PCs by |correlation|, largest first
+order_idx <- order(abs(cors), decreasing = TRUE)
+order_idx[1:5]   # see the top 5 PCs by label correlation
+
+best_pc  <- order_idx[1]  # this is 1 (PC1)
+second_pc <- order_idx[2] # next best
+
+best_pc
+second_pc
+
+scores_top_lab <- as_tibble(pca_sae_top$x[, c(1, second_pc)]) %>%
+  mutate(
+    Entry = df$Entry,
+    is_neuropeptide = df[[flag_col]],
+    type = if_else(is_neuropeptide, "Neuropeptide", "Non-neuropeptide"),
+    type = factor(type, levels = c("Non-neuropeptide", "Neuropeptide"))
+  )
+
+colnames(scores_top_lab)[1:2] <- c("PC1", "PC_best2")
+
+ggplot() +
+  geom_point(
+    data = dplyr::filter(scores_top_lab, type == "Non-neuropeptide"),
+    aes(x = PC1, y = PC_best2, fill = type),
+    color = "#062c5e",
+    shape = 21,
+    alpha = 0.4,
+    size = 2,
+    stroke = 0.5
+  ) +
+  geom_point(
+    data = dplyr::filter(scores_top_lab, type == "Neuropeptide"),
+    aes(x = PC1, y = PC_best2, fill = type),
+    color = "#ff5e00",
+    shape = 21,
+    alpha = 0.9,
+    size = 2,
+    stroke = 0.5
+  ) +
+  scale_fill_manual(
+    name = "",
+    values = c("Non-neuropeptide" = "#477aad",
+               "Neuropeptide"     = "#ffb145")
+  ) +
+  theme_minimal() +
+  labs(
+    x = "PC1",
+    y = paste0("PC", second_pc, " (2nd-best label aligned)"),
+    title = "SAE embeddings (top 320, PC1 vs label-aligned PC)"
+  )
+
+```
+
+
+
+Looking at the 320 features more closely:
+
+```{r sae-logit-score, message=FALSE, warning=FALSE}
+library(glmnet)
+library(dplyr)
+library(ggplot2)
+
+X <- as.matrix(df[, non_const_cols_top])
+y <- as.numeric(df[[flag_col]])  # TRUE/FALSE -> 1/0
+y <- ifelse(y, 1, 0)
+
+set.seed(1)
+fit <- cv.glmnet(X, y, family = "binomial", alpha = 0)
+
+# Predicted probability of being a neuropeptide
+p_hat <- as.numeric(predict(fit, newx = X, s = "lambda.min", type = "response"))
+
+score_df <- tibble(
+  prob_neuropeptide = p_hat,
+  is_neuropeptide   = df[[flag_col]]
+)
+
+ggplot(score_df, aes(x = prob_neuropeptide, fill = is_neuropeptide)) +
+  geom_density(alpha = 0.4) +
+  scale_fill_manual(values = c("FALSE" = "#477aad", "TRUE" = "#ffb145"),
+                    name   = "",
+                    labels = c("Non-neuropeptide", "Neuropeptide")) +
+  theme_minimal() +
+  labs(
+    x = "Predicted probability (neuropeptide)",
+    y = "Density",
+    title = "Classifier separation using top 320 SAE features"
+  )
+```
+
+
+
+If those features are really good for prediction, this plot will show **two density curves shifted apart**. That’s the “separation” your classifier sees, even if PCA doesn’t show two distinct blobs.
+
+---
+
+## 2) Supervised projection: LDA on the top-320 SAE features
+
+LDA explicitly finds directions that separate classes. So instead of “does PC1 separate labels?”, you’re now saying “give me the axis that *best* separates neuropeptides from others.”
+
+```{r sae-lda-fixed3, message=FALSE, warning=FALSE}
+library(MASS)
+library(dplyr)
+library(ggplot2)
+
+# 1) Labels
+y <- as.factor(df[[flag_col]])  # TRUE/FALSE -> factor
+table(y)
+
+# 2) Start with globally non-constant top features
+X_all <- df[, non_const_cols_top, drop = FALSE]
+
+# 3) Drop features that are (almost) constant within any class
+eps <- 1e-4  # tolerance for "constant within group"
+
+const_within_groups <- sapply(X_all, function(col) {
+  # within-class SDs
+  sds <- tapply(col, y, sd)
+  # treat NA or very small SD as constant
+  any(is.na(sds) | sds < eps)
+})
+
+cat("Features dropped as constant-within-group (tol =", eps, "):",
+    sum(const_within_groups), "\n")
+
+good_cols <- names(const_within_groups)[!const_within_groups]
+cat("Features kept for LDA:", length(good_cols), "\n")
+
+# If we dropped too many and are left with nothing, fail gracefully
+if (length(good_cols) == 0) {
+  stop("No features left after filtering constant-within-group predictors.")
+}
+
+# 4) Build X matrix with the filtered predictors
+X <- as.matrix(X_all[, good_cols, drop = FALSE])
+
+# 5) Fit LDA
+lda_fit <- lda(x = X, grouping = y)
+
+# 6) LDA scores
+lda_scores <- as.data.frame(predict(lda_fit)$x) %>%
+  mutate(
+    is_neuropeptide = df[[flag_col]],
+    type = if_else(is_neuropeptide, "Neuropeptide", "Non-neuropeptide"),
+    type = factor(type, levels = c("Non-neuropeptide", "Neuropeptide"))
+  )
+
+# 7) Plot: LD1 vs LD2 if available, else 1D density on LD1
+if ("LD2" %in% names(lda_scores)) {
+  ggplot(lda_scores, aes(x = LD1, y = LD2, fill = type)) +
+    geom_point(
+      shape = 21,
+      alpha = 0.7,
+      size = 2,
+      color = "black",
+      stroke = 0.3
+    ) +
+    scale_fill_manual(
+      values = c("Non-neuropeptide" = "#477aad",
+                 "Neuropeptide"     = "#ffb145"),
+      name = ""
+    ) +
+    theme_minimal() +
+    labs(
+      x = "LD1",
+      y = "LD2",
+      title = "LDA projection (top 320 SAE features, filtered with tolerance)"
+    )
+} else {
+  ggplot(lda_scores, aes(x = LD1, fill = type)) +
+    geom_density(alpha = 0.4) +
+    scale_fill_manual(
+      values = c("Non-neuropeptide" = "#477aad",
+                 "Neuropeptide"     = "#ffb145"),
+      name = ""
+    ) +
+    theme_minimal() +
+    labs(
+      x = "LD1",
+      y = "Density",
+      title = "LDA projection (top 320 SAE features, filtered with tolerance)"
+    )
+}
+```

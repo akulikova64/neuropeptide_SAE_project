@@ -1,0 +1,307 @@
+---
+title: "l18_activations_interactive"
+output: html_document
+date: "2025-11-04"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggiraph)
+library(glue)
+library(htmltools)
+library(fs)
+library(readr)
+library(stringr)
+```
+
+# [4813, 3355, 645, 5544, 595, 10051, 4151, 2100, 4219, 7479, 3836, 4896] 
+
+```{r}
+# ─── PARAMETERS & PATHS ─────────────────────────────────────────────────────────
+
+feature         <- 4896  # <- change as needed
+activations_csv <- glue("../../data/neuropep_features/feature_{feature}_activations_ALL.csv")
+annot_csv       <- "../../data/neuropeptides_human_secratome.csv"  # Entry, Protein_names, Sequence, Go_function
+output_dir      <- "../../figures/l18_secratome_activations/"
+html_out        <- file.path(output_dir, glue("feature_{feature}_interactive.html"))
+dir_create(output_dir, recurse = TRUE)
+
+```
+
+```{r}
+# ─── READ ANNOTATIONS (has sequences) ───────────────────────────────────────────
+
+ann <- readr::read_csv(annot_csv, col_types = readr::cols(
+  Entry         = readr::col_character(),
+  Protein_names = readr::col_character(),
+  Sequence      = readr::col_character(),
+  Go_function   = readr::col_character()
+)) %>%
+  dplyr::mutate(
+    Entry         = stringr::str_trim(Entry),
+    # keep only text before any trailing [ ... ]
+    Protein_names = Protein_names %>%
+      tidyr::replace_na("") %>%
+      stringr::str_remove("\\s*\\[.*\\]$") %>%
+      stringr::str_trim(),
+    Go_function   = tidyr::replace_na(Go_function, ""),
+    Sequence      = toupper(tidyr::replace_na(Sequence, ""))
+  ) %>%
+  dplyr::filter(Sequence != "") %>%
+  dplyr::distinct(Entry, .keep_all = TRUE)
+
+```
+
+```{r}
+# ─── READ ACTIVATIONS & ADD RESIDUES/TITLES ─────────────────────────────────────
+
+activations_df <- read_csv(activations_csv, col_types = cols(
+Entry      = col_character(),
+position   = col_integer(),
+activation = col_double()
+)) %>%
+mutate(Entry = str_trim(Entry)) %>%
+inner_join(ann, by = "Entry") %>%
+mutate(
+residue       = str_sub(Sequence, position, position),
+title_label   = glue("{Entry} — {Protein_names}"),
+title_tooltip = glue("{Go_function}")
+)
+
+entries_for_plot <- unique(activations_df$Entry)
+length(entries_for_plot)
+
+```
+
+```{r}
+# ─── PLOTTING FUNCTION (GGIRAPH) ───────────────────────────────────────────────
+
+# Changes:
+
+# • Title is now TWO LINES: "Feature {feature}: {Entry}\n{Protein_names}"
+
+# • Title is moved to the RIGHT and right-aligned (hjust = 1) so it doesn’t get cut off
+
+# • Function attaches a "max_activation" attribute to the returned widget so you can
+
+# sort widgets later by decreasing peak activation:
+
+# widgets <- purrr::map(entries_for_plot, make_profile_girafe)
+
+# peaks   <- sapply(widgets, attr, which = "max_activation")
+
+# widgets <- widgets[order(-peaks)]
+
+make_profile_girafe <- function(entry_id) {
+df_e <- dplyr::filter(activations_df, Entry == entry_id)
+if (nrow(df_e) == 0) return(NULL)
+
+seq_len <- max(df_e$position, na.rm = TRUE)
+y_max   <- max(df_e$activation, na.rm = TRUE)
+y_lim   <- ifelse(is.finite(y_max) && y_max > 0, y_max * 1.2, 1)
+tick_h  <- y_lim * 0.09
+
+x_by <- dplyr::case_when(
+seq_len > 500 ~ 50L,
+seq_len > 350 ~ 40L,
+seq_len > 100 ~ 20L,
+TRUE          ~ 10L
+)
+x_breaks <- seq(0, seq_len, by = x_by)
+
+# Right-anchored, two-line title: keep it slightly inside the right limit and right-align
+
+ttl <- df_e %>%
+dplyr::slice(1) %>%
+dplyr::transmute(
+x = seq_len * 0.98,  # near the right edge but inside limits
+y = y_lim * 1.08,
+label   = glue("Feature {feature}: {Entry}\n{Protein_names}"),
+tooltip = title_tooltip,
+data_id = Entry
+)
+
+hover_strips <- df_e %>%
+dplyr::transmute(
+xmin    = position - 0.5,
+xmax    = position + 0.5,
+ymin    = -tick_h,
+ymax    = 0,
+tooltip = glue("Position: {position}\nResidue: {residue}"),
+data_id = paste0(Entry, "_", position)
+)
+
+p <- ggplot() +
+ggiraph::geom_text_interactive(
+data = ttl,
+aes(x = x, y = y, label = label, tooltip = tooltip, data_id = data_id),
+size = 4, inherit.aes = FALSE, hjust = 1  # right-align title
+) +
+ggiraph::geom_rect_interactive(
+data = hover_strips,
+aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax,
+tooltip = tooltip, data_id = data_id),
+fill = "transparent", color = NA, inherit.aes = FALSE
+) +
+ggiraph::geom_col_interactive(
+data = df_e,
+aes(
+x = position, y = activation,
+tooltip = glue("Position: {position}\nResidue: {residue}\nActivation: {round(activation, 3)}"),
+data_id = paste0(Entry, "_", position)
+),
+fill = "steelblue", color = "gray40", width = 1, linewidth = 0.1, alpha = 0.7
+) +
+geom_segment(
+data = tibble(
+x = seq(0.5, seq_len + 0.5, by = 1),
+xend = x, y = 0, yend = -tick_h * 0.9
+),
+aes(x = x, xend = xend, y = y, yend = yend),
+color = "gray40", linewidth = 0.2, inherit.aes = FALSE
+) +
+geom_hline(yintercept = 0, color = "black", linewidth = 0.3) +
+scale_x_continuous(
+breaks = x_breaks,
+limits = c(0.5, seq_len + 0.5),
+expand = expansion(0, 0)
+) +
+scale_y_continuous(
+breaks = scales::pretty_breaks(6),
+expand = expansion(0, 0)
+) +
+coord_cartesian(clip = "off") +
+labs(x = "Residue Position", y = "Activation") +
+theme(
+plot.margin        = margin(t = 40, r = 10, b = 10, l = 10),
+panel.grid.major   = element_blank(),
+panel.grid.minor   = element_blank(),
+axis.line.y        = element_line(color = "black", linewidth = 0.2),
+axis.ticks.x       = element_line(color = "black", linewidth = 0.2),
+axis.ticks.y       = element_line(color = "black", linewidth = 0.2),
+axis.text.x        = element_text(color = "black", margin = margin(t = 4)),
+axis.text.y        = element_text(color = "black"),
+axis.title.x       = element_text(margin = margin(t = 6)),
+axis.title.y       = element_text(margin = margin(r = 6)),
+panel.background   = element_rect(fill = "white", color = NA),
+plot.background    = element_rect(fill = "white", color = NA)
+)
+
+w <- ggiraph::girafe(
+ggobj      = p,
+width_svg  = 11,
+height_svg = 5,
+options    = list(ggiraph::opts_hover(css = "fill-opacity:1;cursor:pointer;"))
+)
+
+# Attach peak activation so you can sort widgets later (highest first)
+
+attr(w, "max_activation") <- y_max
+w
+}
+
+
+```
+
+
+```{r}
+# ─── BUILD, SORT (by peak activation ↓), & SAVE ALL WIDGETS ─────────────────────
+
+# 1) Build widgets
+
+widgets <- purrr::map(entries_for_plot, make_profile_girafe)
+widgets <- widgets[!vapply(widgets, is.null, logical(1))]
+
+# 2) Extract each widget's peak activation (set in make_profile_girafe)
+
+peaks <- vapply(widgets, function(w) {
+val <- attr(w, "max_activation")
+if (is.null(val) || !is.finite(val)) NA_real_ else as.numeric(val)
+}, numeric(1))
+
+# Optional: if you want a stable tie-breaker (e.g., by Entry), collect ids too
+
+ids <- vapply(widgets, function(w) {
+
+# pull the Entry printed in the title stored inside the widget data if present
+
+# If not available, just use an index
+
+id <- attr(w, "data_id")
+if (is.null(id)) "" else as.character(id)
+}, character(1))
+
+# 3) Order widgets by decreasing peak activation (NAs last)
+
+ord <- order(-peaks, ids, na.last = TRUE)
+widgets <- widgets[ord]
+
+# 4) Add spacing and save
+
+spaced_widgets <- lapply(widgets, function(w) {
+tags$div(style = "margin: 50px 20px;", w)
+})
+
+all_page <- tagList(lapply(spaced_widgets, function(w) list(w, htmltools::br())))
+htmltools::save_html(all_page, html_out)
+html_out
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
