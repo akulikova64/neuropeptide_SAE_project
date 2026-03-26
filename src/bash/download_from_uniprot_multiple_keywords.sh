@@ -17,15 +17,15 @@ go_f,\
 go_p,\
 protein_families"
 
-# Download data from UniProt
+# Download the data from UniProt:
 echo "Downloading UniProt data..."
 curl -o "$TSV_FILE" "$URL"
 
-# Check if download was successful
+# Now I will heck if download was successful
 if [[ -s "$TSV_FILE" ]]; then
     echo "Download complete: $TSV_FILE"
 
-    # Convert TSV to CSV
+    # Converting TSV to CSV
     echo "Converting TSV to CSV..."
     cat "$TSV_FILE" | tr '\t' ',' > "$CSV_FILE"
 
