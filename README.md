@@ -9,5 +9,5 @@
     - `R/` — all data visualization scripts
 
 
-### Each folder contains its own README file with discriptions of relevant scripts
+### Note: Each folder above contains its own README file with discriptions of relevant scripts.
 
