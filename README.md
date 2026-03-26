@@ -7,3 +7,7 @@
     - `bash/` — all bash data processing and pythn script usage examples
     - `python/` — all data processing and training scripts
     - `R/` — all data visualization scripts
+
+
+### Each folder contains its own README file with discriptions of relevant scripts
+
