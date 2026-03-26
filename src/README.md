@@ -1,4 +1,4 @@
-# Analysis scripts (R/python/bash) to reproduce results
+# Analysis scripts to reproduce results
 
 - `bash/` — all bash data processing and python script usage examples
 - `python/` — all data processing and model training/running scripts
