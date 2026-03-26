@@ -2,7 +2,7 @@
 set -euo pipefail
 
 IN="../../data/fig_6_zebrafish_secretome/secretome_final_cdhit_95_no_A0AB32TF33.fasta"
-OUT="../../data/fig_6_zebrafish_secretome/secratome_entry_ids.txt"
+OUT="../../data/fig_6_zebrafish_secretome/secretome_entry_ids.txt"
 
 # Extract accession between the first two '|' on header lines; write one per line.
 awk '

@@ -21,8 +21,8 @@ library(stringr)
 
 feature         <- 4896  # <- change as needed
 activations_csv <- glue("../../data/neuropep_features/feature_{feature}_activations_ALL.csv")
-annot_csv       <- "../../data/neuropeptides_human_secratome.csv"  # Entry, Protein_names, Sequence, Go_function
-output_dir      <- "../../figures/l18_secratome_activations/"
+annot_csv       <- "../../data/neuropeptides_human_secretome.csv"  # Entry, Protein_names, Sequence, Go_function
+output_dir      <- "../../figures/l18_secretome_activations/"
 html_out        <- file.path(output_dir, glue("feature_{feature}_interactive.html"))
 dir_create(output_dir, recurse = TRUE)
 

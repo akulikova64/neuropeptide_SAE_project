@@ -289,22 +289,22 @@ clean_entry <- function(x) {
 
 1. Compute per-Entry max cleavage probabilities for each model
 ```{r}
-max_logreg <- secratome_logreg_predicitons %>%
+max_logreg <- secretome_logreg_predicitons %>%
   mutate(Entry = clean_entry(Entry)) %>%
   group_by(Entry) %>%
   summarise(max_logreg = max(probability, na.rm = TRUE), .groups = "drop")
 
-max_crf <- secratome_crf_predicitons %>%
+max_crf <- secretome_crf_predicitons %>%
   mutate(Entry = clean_entry(Entry)) %>%
   group_by(Entry) %>%
   summarise(max_crf = max(probability, na.rm = TRUE), .groups = "drop")
 
-max_rf <- secratome_ranfor_predicitons %>%
+max_rf <- secretome_ranfor_predicitons %>%
   mutate(Entry = clean_entry(Entry)) %>%
   group_by(Entry) %>%
   summarise(max_rf = max(probability, na.rm = TRUE), .groups = "drop")
 
-max_svm <- secratome_svm_predicitons %>%
+max_svm <- secretome_svm_predicitons %>%
   mutate(Entry = clean_entry(Entry)) %>%
   group_by(Entry) %>%
   summarise(max_svm = max(probability, na.rm = TRUE), .groups = "drop")
@@ -326,7 +326,7 @@ max_cleavage_df <- max_logreg %>%
 2. Prep layer-18 per-Entry probabilities
 ```{r}
 model_320_logreg <- read.csv(
-  "/Volumes/T7 Shield/layer_18_F1_scores/secratome_log_reg_folds_320.csv"
+  "/Volumes/T7 Shield/layer_18_F1_scores/secretome_log_reg_folds_320.csv"
 )
 
 layer18_df <- model_320_logreg %>%
@@ -342,7 +342,7 @@ layer18_df <- model_320_logreg %>%
 
 3. Join with neuropeptide flags
 ```{r}
-secr_neuro_flags_raw <- read.csv("../../data/secratome_neuropeptide_flags.csv")
+secr_neuro_flags_raw <- read.csv("../../data/secretome_neuropeptide_flags.csv")
 
 flags_df <- secr_neuro_flags_raw %>%
   mutate(
@@ -380,7 +380,7 @@ head(secr_neuro_flags$Entry[secr_neuro_flags$neuropeptide == TRUE], 10)
 
 ```{r}
 # 0) Load filter tables
-secratome_no_enzymes <- read.csv(
+secretome_no_enzymes <- read.csv(
   "../../data/secretome_filter_out_enzymes_5/secretome_filtered_nonenzymes_nocsdhit.csv"
 )
 
@@ -390,7 +390,7 @@ secr_no_tm <- read.csv(
 
 # allowed entries = non-enzyme ∩ non-TM (after cleaning IDs)
 allowed_entries <- intersect(
-  clean_entry(secratome_no_enzymes$Entry),
+  clean_entry(secretome_no_enzymes$Entry),
   clean_entry(secr_no_tm$Entry)
 )
 

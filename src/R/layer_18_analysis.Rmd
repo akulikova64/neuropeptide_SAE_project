@@ -286,7 +286,7 @@ ggplot(layer_18_log_reg, aes(x = num_features, y = validation)) +
 
 
 ```{r}
-model_320_logreg <- read.csv("/Volumes/T7 Shield/layer_18_F1_scores/secratome_log_reg_folds_320.csv")
+model_320_logreg <- read.csv("/Volumes/T7 Shield/layer_18_F1_scores/secretome_log_reg_folds_320.csv")
 
 colnames(model_320_logreg)
 ```
@@ -298,16 +298,16 @@ model_320_logreg <- model_320_logreg %>%
 ```
 
 ```{r}
-filtered_secratome <- read.csv("../../data/filtered_secratome_15316.csv")
+filtered_secretome <- read.csv("../../data/filtered_secretome_15316.csv")
 ```  
   
 ```{r}  
-filtered_secratome_wl18pred <- filtered_secratome %>%
+filtered_secretome_wl18pred <- filtered_secretome %>%
   inner_join(model_320_logreg) %>%
   select(Entry, neuropeptide, l18_logreg_prob, Protein_names, avg_prob, everything())
 ```
 ```{r}
-low_prob_group <- filtered_secratome_wl18pred %>%
+low_prob_group <- filtered_secretome_wl18pred %>%
   select(Entry, neuropeptide, l18_logreg_prob, Protein_names) %>%
   filter(neuropeptide == TRUE) %>%
   filter(l18_logreg_prob <= 0.10)
@@ -316,7 +316,7 @@ low_prob_group <- filtered_secratome_wl18pred %>%
 ```
 
 ```{r}
-mid_prob_group <- filtered_secratome_wl18pred %>%
+mid_prob_group <- filtered_secretome_wl18pred %>%
   select(Entry, neuropeptide, l18_logreg_prob, Protein_names) %>%
   filter(neuropeptide,                      # same as neuropeptide == TRUE
          l18_logreg_prob > 0.10,
@@ -326,7 +326,7 @@ mid_prob_group <- filtered_secratome_wl18pred %>%
 ```
 
 ```{r}
-high_prob_FN_group <- filtered_secratome_wl18pred %>%
+high_prob_FN_group <- filtered_secretome_wl18pred %>%
   select(Entry, neuropeptide, l18_logreg_prob, Protein_names) %>%
   filter(!neuropeptide,                      # same as neuropeptide == FALSE
          l18_logreg_prob >= 0.90) %>%
@@ -343,7 +343,7 @@ library(scales)
 library(forcats)
 
 # 1) Bin the probabilities into 10% buckets
-binned <- filtered_secratome_wl18pred %>%
+binned <- filtered_secretome_wl18pred %>%
   filter(!is.na(l18_logreg_prob), !is.na(neuropeptide)) %>%
   mutate(
     prob_bin = cut(
@@ -388,14 +388,14 @@ ggplot(binned, aes(x = fct_rev(prob_bin), y = prop_np)) +
 # here I want to filter the secretome entries to the allowed entries and rerun the plot above (I will be just removing the unused entries)
 
 ```{r}
-colnames(filtered_secratome_wl18pred)
+colnames(filtered_secretome_wl18pred)
 ```
 ```{r}
 library(tidyverse)
 
 allowed_entries <- read_csv("../../data/final_human_secretome_entries_1201.csv")
 
-filtered_secratome_wl18pred <- filtered_secratome_wl18pred %>%
+filtered_secretome_wl18pred <- filtered_secretome_wl18pred %>%
   filter(Entry %in% allowed_entries$Entry)
 ```
 ```{r}
@@ -405,7 +405,7 @@ library(scales)
 library(forcats)
 
 # 1) Bin the probabilities into 10% buckets
-binned <- filtered_secratome_wl18pred %>%
+binned <- filtered_secretome_wl18pred %>%
   filter(!is.na(l18_logreg_prob), !is.na(neuropeptide)) %>%
   mutate(
     prob_bin = cut(
@@ -459,7 +459,7 @@ library(forcats)
 library(scales)
 
 # 1) Add 10% probability bins to the row-level data
-binned_rows <- filtered_secratome_wl18pred %>%
+binned_rows <- filtered_secretome_wl18pred %>%
   filter(!is.na(l18_logreg_prob), !is.na(Length)) %>% 
   filter(neuropeptide == TRUE) %>%
   mutate(
@@ -512,7 +512,7 @@ first_bin <- bin_labels[1]                 # "0%–10%"
 last_bin  <- bin_labels[length(bin_labels)]# "90%–100%"
 
 # Row-level data with bins
-binned_rows <- filtered_secratome_wl18pred %>%
+binned_rows <- filtered_secretome_wl18pred %>%
   filter(!is.na(l18_logreg_prob), !is.na(Length)) %>%
   filter(neuropeptide) %>%
   mutate(
@@ -564,7 +564,7 @@ library(scales)
 # 1) Bin and compute mean Length + n per bin
 bin_labels <- paste0(seq(0, 90, 10), "%–", seq(10, 100, 10))
 
-binned_means <- filtered_secratome_wl18pred %>%
+binned_means <- filtered_secretome_wl18pred %>%
   filter(!is.na(l18_logreg_prob), !is.na(Length)) %>%
   mutate(
     prob_bin = cut(
@@ -613,7 +613,7 @@ library(dplyr)
 library(ggplot2)
 library(forcats)
 
-topbin_1pct <- filtered_secratome_wl18pred %>%
+topbin_1pct <- filtered_secretome_wl18pred %>%
   filter(!is.na(l18_logreg_prob), !is.na(neuropeptide)) %>%   # fix: remove fct_rev(), close parens
   filter(l18_logreg_prob >= 0.90) %>%                        # keep only 90–100%
   mutate(
@@ -667,7 +667,7 @@ library(scales)
 # --- choose a threshold (edit me) ---
 thr <- 0.5
 
-cm <- filtered_secratome_wl18pred %>%
+cm <- filtered_secretome_wl18pred %>%
   filter(!is.na(l18_logreg_prob), !is.na(neuropeptide)) %>%
   mutate(
     pred = l18_logreg_prob >= thr,

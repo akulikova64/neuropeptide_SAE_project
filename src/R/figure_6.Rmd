@@ -22,13 +22,13 @@ zebra_fish_pred <- read.csv("../../data/fig_6_zebrafish_secretome/layer_18_secre
 
 Neuropeptide flag files:
 ```{r}
-mouse_flags <- read.csv("../../data/fig_6_mouse_secretome/secratome_neuropeptide_flags.csv")
+mouse_flags <- read.csv("../../data/fig_6_mouse_secretome/secretome_neuropeptide_flags.csv")
 
-worm_flags <- read.csv("../../data/fig_6_c_elegans_secretome/secratome_neuropeptide_flags.csv")
+worm_flags <- read.csv("../../data/fig_6_c_elegans_secretome/secretome_neuropeptide_flags.csv")
 
-fly_flags <- read.csv("../../data/fig_6_drosophila_secretome/secratome_neuropeptide_flags.csv")
+fly_flags <- read.csv("../../data/fig_6_drosophila_secretome/secretome_neuropeptide_flags.csv")
 
-fish_flags <- read.csv("../../data/fig_6_zebrafish_secretome/secratome_neuropeptide_flags.csv")
+fish_flags <- read.csv("../../data/fig_6_zebrafish_secretome/secretome_neuropeptide_flags.csv")
 ```
 
 Loading in the annotations:
@@ -36,21 +36,21 @@ Loading in the annotations:
 ```{r}
 library(dplyr)
 
-mouse_ann <- read.csv("../../data/fig_6_mouse_secretome/secratome_annotations_mouse_clean.csv")
+mouse_ann <- read.csv("../../data/fig_6_mouse_secretome/secretome_annotations_mouse_clean.csv")
 
-worm_ann  <- read.csv("../../data/fig_6_c_elegans_secretome/secratome_annotations_c_elegans_clean.csv")
+worm_ann  <- read.csv("../../data/fig_6_c_elegans_secretome/secretome_annotations_c_elegans_clean.csv")
 
-fly_ann   <- read.csv("../../data/fig_6_drosophila_secretome/secratome_annotations_drosophila_clean.csv")
+fly_ann   <- read.csv("../../data/fig_6_drosophila_secretome/secretome_annotations_drosophila_clean.csv")
 
-fish_ann   <- read.csv("../../data/fig_6_zebrafish_secretome/secratome_annotations_zebrafish_clean.csv")
+fish_ann   <- read.csv("../../data/fig_6_zebrafish_secretome/secretome_annotations_zebrafish_clean.csv")
 ```
 
 
 Defining a function for cleaning my annotations
 ```{r}
-clean_secretome_annotations <- function(secratome_annotations) {
+clean_secretome_annotations <- function(secretome_annotations) {
   
-  secratome_annotations %>%
+  secretome_annotations %>%
     dplyr::select(
       Entry,
       Sequence,

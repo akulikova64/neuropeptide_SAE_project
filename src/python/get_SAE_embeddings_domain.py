@@ -24,10 +24,10 @@ output_folder.mkdir(parents=True, exist_ok=True)
 # ============== Input and Output Data Paths =============
 #output_folder = "../../data/concept_groups/embeddings/group_2/training"
 #output_folder = "../../data/concept_groups/embeddings/group_2/"
-#output_folder = "/Volumes/T7 Shield/secratome_analysis/secratome_SAE_embeddings/"
+#output_folder = "/Volumes/T7 Shield/secretome_analysis/secretome_SAE_embeddings/"
 
 #output_folder = "/Volumes/T7 Shield/layer_18_embeddings/"
-#output_folder = "/Volumes/T7 Shield/layer_18_secratome_embeddings/"
+#output_folder = "/Volumes/T7 Shield/layer_18_secretome_embeddings/"
 #output_folder = "/Volumes/T7 Shield/layer_18_negative_embeddings/"
 #output_folder = "/Volumes/T7 Shield/layer_18_novo_smORF_embeddings/"
 #output_folder = "/Volumes/T7 Shield/layer_18_de_Souza_embeddings/"

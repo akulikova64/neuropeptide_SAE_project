@@ -3,8 +3,8 @@ import os
 import csv
 import pandas as pd
 
-TSV_IN = "../../data/fig_6_zebrafish_secretome/secratome_annotations_zebrafish.tsv"
-CSV_OUT = "../../data/fig_6_zebrafish_secretome/secratome_annotations_zebrafish_clean.csv"
+TSV_IN = "../../data/fig_6_zebrafish_secretome/secretome_annotations_zebrafish.tsv"
+CSV_OUT = "../../data/fig_6_zebrafish_secretome/secretome_annotations_zebrafish_clean.csv"
 
 tsv_abs = os.path.abspath(TSV_IN)
 csv_abs = os.path.abspath(CSV_OUT)

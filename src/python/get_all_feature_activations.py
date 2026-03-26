@@ -5,7 +5,7 @@ import pandas as pd
 # extract 
 
 # ─── USER PARAMETERS ────────────────────────────────────────────────────
-embeddings_dir = "/Volumes/T7 Shield/layer_18_secratome_embeddings"
+embeddings_dir = "/Volumes/T7 Shield/layer_18_secretome_embeddings"
 feature_idx    = 4813   # change to the feature you want
 output_csv     = "../../data/neuropep_features/feature_{}_activations_ALL.csv".format(feature_idx)
 

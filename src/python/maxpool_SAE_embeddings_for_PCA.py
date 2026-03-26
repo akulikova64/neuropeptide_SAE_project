@@ -15,7 +15,7 @@ from glob import glob
 
 # ---------------- CONFIG ----------------
 
-EMB_DIR = "/Volumes/T7 Shield/layer_18_secratome_embeddings"
+EMB_DIR = "/Volumes/T7 Shield/layer_18_secretome_embeddings"
 ENTRY_CSV = "../../data/final_human_secretome_entries_1201.csv"
 OUT_CSV = "../../data/sae_layer18_secretome_embeddings_maxpooled_1201.csv"
 

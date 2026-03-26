@@ -13,7 +13,7 @@ import pandas as pd
 
 # ── CONFIG (paths) ─────────────────────────────────────────────────────────
 #INPUT_FASTA = Path("../../data/novo_smORFpipe_full_data.fasta")
-#INPUT_FASTA = Path("../../data/fig_6_zebrafish_secretome/secratome_zebrafish.fasta")
+#INPUT_FASTA = Path("../../data/fig_6_zebrafish_secretome/secretome_zebrafish.fasta")
 INPUT_FASTA = Path("../../data/amphibian_analysis/combined_Anura_secretomes_no_ERR_DRR.fasta")
 #OUT_DIR     = Path("../../data/novo_alldata_filter_out_enzymes")
 #OUT_DIR     = Path("../../data/fig_6_zebrafish_secretome/secretome_filter_out_enzymes_5")
